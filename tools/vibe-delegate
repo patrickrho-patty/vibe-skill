@@ -65,11 +65,6 @@ import sys, json, re
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfhilmnprsu]|\x1b\([AB]|\x0f|\x0e')
 tools_called = 0
-# Token estimation: 4 chars ~ 1 token (standard approximation).
-# Vibe streaming JSON contains full conversation; prompt = system+user+tool, completion = assistant.
-prompt_chars = 0
-completion_chars = 0
-
 def clean(line):
     line = line.replace('\r', '')
     return ANSI_RE.sub('', line).strip()
@@ -86,13 +81,7 @@ for raw in sys.stdin:
     role    = msg.get('role', '')
     content = msg.get('content', '') or ''
 
-    # Accumulate content length for token estimation
-    if role in ('system', 'user', 'tool'):
-        prompt_chars += len(content)
-    elif role == 'assistant':
-        completion_chars += len(content)
-
-    if role in ('system', 'user'):
+        if role in ('system', 'user'):
         continue
 
     if role == 'assistant':
@@ -123,14 +112,32 @@ for raw in sys.stdin:
         else:
             print(f'  [tool]  {(first_line or content)[:100]}', flush=True)
 
-prompt_tok     = prompt_chars // 4
-completion_tok = completion_chars // 4
-total_tok      = prompt_tok + completion_tok
 print(f'Tool calls: {tools_called}')
-print(f'Mistral tokens (est.): ~{total_tok:,}  (~{prompt_tok:,} prompt + ~{completion_tok:,} completion)')
 "
 VIBE_EXIT=$?
 set -e
+
+# ── Real Mistral token counts from session log ─────────────────────────────────
+VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
+SESSION_LOG=$(ls -t "$VIBE_HOME/logs/session"/*/meta.json 2>/dev/null | head -1)
+if [ -n "$SESSION_LOG" ]; then
+  python3 -c "
+import json, sys
+try:
+    with open('$SESSION_LOG') as f:
+        data = json.load(f)
+    stats = data.get('stats', {})
+    prompt = stats.get('last_turn_prompt_tokens', 0)
+    completion = stats.get('last_turn_completion_tokens', 0)
+    total = stats.get('last_turn_total_tokens', prompt + completion)
+    cost = stats.get('session_cost', 0)
+    session_total = stats.get('session_total_llm_tokens', 0)
+    print(f'Mistral tokens (real): {total:,}  ({prompt:,} prompt + {completion:,} completion)')
+    print(f'Session total so far : {session_total:,} tokens  |  cost ~\${cost:.4f}')
+except Exception as e:
+    print(f'(token read failed: {e})')
+" 2>/dev/null
+fi
 
 echo ""
 if [ "$VIBE_EXIT" -eq 124 ]; then
