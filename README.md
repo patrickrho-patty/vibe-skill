@@ -4,12 +4,11 @@
 
 ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg) ![Shell](https://img.shields.io/badge/language-Shell-green.svg) ![GitHub stars](https://img.shields.io/github/stars/pcx-wave/vibe-skill?style=social) ![Claude Code skill](https://img.shields.io/badge/-Claude%20Code%20skill-CC785C)
 
-```
-┌─────┐   ┌───────────┐   ┌──────────────┐   ┌─────────────────┐   ┌─────────┐   ┌───────────┐
-│User │───│Claude Code│───│vibe-delegate│───│Mistral Vibe/    │───│git diff │───│Claude Code│
-└─────┘   └───────────┘   └──────────────┘   │   Gemini CLI     │   └─────────┘   └───────────┘
-                                            └─────────────────┘
-```
+1. User types `/vibe <instruction>` in Claude Code
+2. Claude decomposes the task and writes a prompt
+3. `vibe-delegate` runs Mistral Vibe (or Gemini CLI) in a pseudo-TTY
+4. The delegate reports tool calls, token counts, and `git diff --stat`
+5. Claude reviews the diff and summarizes the result
 
 **Claude orchestrates. Vibe and Gemini do the heavy lifting. You review the diff.**
 Claude sees only ~500–1500 tokens per run regardless of how many file reads Vibe or Gemini performs internally — massive savings on exploratory and implementation tasks.
@@ -20,7 +19,9 @@ Claude sees only ~500–1500 tokens per run regardless of how many file reads Vi
 
 | Scenario | Claude-only cost | With vibe-skill |
 |----------|-------------------|-----------------|
+| Simple 1-file tweak (800 tokens) | ~$0.003 | ~$0.002 |
 | 6-read implementation task (4,800 tokens) | ~$0.018 | ~$0.009 |
+| Complex multi-file refactor (12,000 tokens) | ~$0.045 | ~$0.012 |
 
 > Claude token usage for orchestration overhead: ~0.4 tokens (negligible cost). Vibe consumes Mistral tokens; Claude only sees the compressed final output.
 
@@ -182,24 +183,9 @@ A parallel delegate using **Gemini CLI** is available at [pcx-wave/gemini-skill]
 
 ---
 
-<details>
-<summary>Known bugs in Vibe (and workarounds)</summary>
-
-| Bug | Workaround |
-|-----|-----------|
-| `search_replace failed` on UTF-8/emoji | Edit with `python3 str.replace()` instead |
-| Duplicated code block at end of file | `git diff`, delete the duplicate manually |
-| Variable declared twice in same scope | Grep the var name before relaunching |
-| Prompt truncated silently | Use the temp-file path (already default in vibe-delegate) |
-
-See `examples/anti-patterns.md` for full examples with root causes.
-</details>
-
----
-
 ## Feedback
 
-See `/tmp/retour_claude_vibe.txt` in this repo for the original feedback from Claude that led to the improvements in `vibe-delegate`.
+See [`docs/feedback-claude-sonnet.md`](docs/feedback-claude-sonnet.md) for the original feedback from Claude that drove the iterations on `vibe-delegate` — real bugs hit, root causes, and the fixes applied.
 
 ---
 
