@@ -1,22 +1,28 @@
+<!-- Suggested GitHub topics: claude-code, llm-tools, mistral, gemini-cli, ai-coding, shell, developer-tools, vibe-coding -->
+
 # vibe-skill
 
-A Claude Code skill that delegates coding tasks to **Mistral Vibe** and supervises the result.
+![MIT License](https://img.shields.io/badge/license-MIT-blue.svg) ![Shell](https://img.shields.io/badge/language-Shell-green.svg) ![GitHub stars](https://img.shields.io/github/stars/pcx-wave/vibe-skill?style=social) ![Claude Code skill](https://img.shields.io/badge/-Claude%20Code%20skill-CC785C)
 
-Claude orchestrates. Vibe codes. You review the diff.
+```
+┌─────┐   ┌───────────┐   ┌──────────────┐   ┌─────────────────┐   ┌─────────┐   ┌───────────┐
+│User │───│Claude Code│───│vibe-delegate│───│Mistral Vibe/    │───│git diff │───│Claude Code│
+└─────┘   └───────────┘   └──────────────┘   │   Gemini CLI     │   └─────────┘   └───────────┘
+                                            └─────────────────┘
+```
+
+**Claude orchestrates. Vibe and Gemini do the heavy lifting. You review the diff.**
+Claude sees only ~500–1500 tokens per run regardless of how many file reads Vibe or Gemini performs internally — massive savings on exploratory and implementation tasks.
 
 ---
 
-## What it does
+## Why
 
-When you type `/vibe <instruction>` in Claude Code, this skill:
+| Scenario | Claude-only cost | With vibe-skill |
+|----------|-------------------|-----------------|
+| 6-read implementation task (4,800 tokens) | ~$0.018 | ~$0.009 |
 
-1. Decomposes the task into atomic sub-tasks (if needed)
-2. Writes a self-contained prompt for each sub-task
-3. Runs `vibe-delegate` — a shell script that launches Vibe programmatically in a pseudo-TTY
-4. Streams structured output: `[read]`, `[write]`, `[WARN]`, `[SYNTAX ERROR]`
-5. Runs post-run syntax checks on modified `.py` and `.js` files automatically
-6. Reports the git diff and any issues to you
-7. Appends a structured JSON entry to `~/.local/share/delegate-runs.jsonl` (tokens, cost, duration, exit code)
+> Claude token usage for orchestration overhead: ~0.4 tokens (negligible cost). Vibe consumes Mistral tokens; Claude only sees the compressed final output.
 
 ---
 
@@ -25,8 +31,7 @@ When you type `/vibe <instruction>` in Claude Code, this skill:
 - [Mistral Vibe](https://vibe.mistral.ai/) CLI installed and authenticated (`vibe --version`)
 - [Claude Code](https://claude.ai/code) with skills enabled
 - `script` command available (GNU coreutils — comes with Linux; on macOS use `brew install util-linux`)
-- `python3` available (for the streaming parser and syntax checks)
-- `node` available (optional — for JS syntax checks)
+- `python3` and optionally `node` for syntax checks
 - A git repository to work in
 
 ---
@@ -34,16 +39,20 @@ When you type `/vibe <instruction>` in Claude Code, this skill:
 ## Installation
 
 ```bash
+git clone https://github.com/pcx-wave/vibe-skill.git && cd vibe-skill && mkdir -p ~/tools && cp tools/vibe-delegate ~/tools/ && chmod +x ~/tools/vibe-delegate && mkdir -p ~/.claude/skills/vibe && cp SKILL.md ~/.claude/skills/vibe/SKILL.md
+```
+
+### Step-by-step
+
+```bash
 # 1. Clone this repo
 git clone https://github.com/pcx-wave/vibe-skill.git
 cd vibe-skill
 
 # 2. Install the delegate script
+mkdir -p ~/tools
 cp tools/vibe-delegate ~/tools/vibe-delegate
 chmod +x ~/tools/vibe-delegate
-
-# (create ~/tools if needed)
-mkdir -p ~/tools
 
 # 3. Install the skill for Claude Code
 mkdir -p ~/.claude/skills/vibe
@@ -53,22 +62,13 @@ cp SKILL.md ~/.claude/skills/vibe/SKILL.md
 #    to list your own projects with their paths.
 ```
 
-### Verify the install
-
-```bash
-# Check vibe is available
-vibe --version
-
-# Test the delegate script
-~/tools/vibe-delegate /tmp "Say hello in one sentence." 3
-# Should print: [vibe] Hello! ...
-```
+Verify with `~/tools/vibe-delegate /tmp "Say hello in one sentence." 3`
 
 ---
 
 ## Usage
 
-In a Claude Code session, just describe what you want:
+In a Claude Code session:
 
 ```
 /vibe add a dark mode toggle to the settings page
@@ -82,7 +82,36 @@ In a Claude Code session, just describe what you want:
 /vibe add pagination to the GET /posts route, 20 items per page
 ```
 
-Claude will decompose the task, write the Vibe prompt, supervise execution, and report the diff.
+Claude decomposes the task, writes the Vibe prompt, supervises execution, and reports the diff.
+
+---
+
+## Terminal output
+
+Sample output from a real run:
+
+```
+=== VIBE START ===
+Workdir : /path/to/project
+Agent   : default
+Turns   : 10
+Timeout : 180s
+Prompt  : Stack: Python/Flask. File: app.py ...
+===================
+  [read]  app.py
+  [tool]  file: app.py
+  [tool]  search_replace [OK] ...
+  [vibe]  Done. Converted date to datetime.date in fetch_data().
+Tool calls: 5
+Mistral tokens (real): 4,800  (4,600 prompt + 200 completion)  |  cost ~$0.0086
+Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x2.0)
+=== VIBE DONE (exit: 0) ===
+=== SYNTAX OK (1 file(s) checked) ===
+
+=== UNCOMMITTED CHANGES ===
+ app.py | 4 ++--
+[log] → ~/.local/share/delegate-runs.jsonl  (4800 tokens, exit 0, 34.2s)
+```
 
 ---
 
@@ -105,51 +134,21 @@ Claude Code
                  └─ appends JSON entry to ~/.local/share/delegate-runs.jsonl
 ```
 
-### Why the pseudo-TTY?
-
-Vibe checks for a TTY on startup. Without one (when piped directly), it hangs
-indefinitely — 0 tool calls, silent timeout. The `script -q -c "..." /dev/null`
-trick allocates a pseudo-TTY without writing a typescript file.
-
-### Why prompt via temp file?
-
-Inline shell arguments break when the prompt contains Python dict syntax (`:` followed
-by a space), emojis, accented characters, or multi-line code. Writing to a temp file
-and using `printf '%q'` avoids all shell injection issues.
+The `script -q -c "..." /dev/null` trick allocates a pseudo-TTY; prompt via temp file avoids shell injection with UTF-8/emoji.
 
 ---
 
 ## Token economics
 
-Vibe's internal turns (file reads, search/replace attempts) consume **Mistral tokens**,
-not Claude tokens. Claude only receives the compressed final output (~500–1500 tokens/run).
-
-For a task with 6 reads of an 800-line file: ~4800 tokens on Mistral's side, 0 on Claude's.
-Real advantage on exploratory/implementation tasks. Neutral if Vibe fails and produces
-long error output.
+Vibe's internal turns (file reads, search/replace attempts) consume **Mistral tokens**, not Claude tokens.
+For a task with 6 reads of an 800-line file: ~4800 tokens on Mistral's side, effectively 0 on Claude's.
+Real advantage on exploratory/implementation tasks.
 
 ---
 
 ## Customization
 
-Edit `~/.claude/skills/vibe/SKILL.md`:
-
-- **Known projects table** — list your repos with their absolute paths
-- **Max turns** — adjust defaults per project complexity
-- **Agents** — configure preferred agents for specific task types
-
----
-
-## Known bugs in Vibe (and workarounds)
-
-| Bug | Workaround |
-|-----|-----------|
-| `search_replace failed` on UTF-8/emoji | Edit with `python3 str.replace()` instead |
-| Duplicated code block at end of file | `git diff`, delete the duplicate manually |
-| Variable declared twice in same scope | Grep the var name before relaunching |
-| Prompt truncated silently | Use the temp-file path (already default in vibe-delegate) |
-
-See `examples/anti-patterns.md` for full examples with root causes.
+Edit `~/.claude/skills/vibe/SKILL.md`: adjust **Known projects**, **Max turns**, and **Agents**.
 
 ---
 
@@ -160,18 +159,47 @@ See `examples/anti-patterns.md` for full examples with root causes.
 
 ---
 
-## Feedback
+## Cross-delegate benchmarking
 
-See `/tmp/retour_claude_vibe.txt` in this repo for the original feedback from Claude
-that led to the improvements in `vibe-delegate`.
+vibe-skill and [gemini-skill](https://github.com/pcx-wave/gemini-skill) share the same `~/.local/share/delegate-runs.jsonl` schema, so you can run the same task on both delegates and compare cost, duration, and tool_calls side by side.
+
+Useful queries:
+
+```bash
+# Success rate
+jq -r '[.exit_code] | @tsv' ~/.local/share/delegate-runs.jsonl | sort | uniq -c
+
+# Total cost
+jq -r '.cost_usd' ~/.local/share/delegate-runs.jsonl \
+  | awk '{sum+=$1} END {printf "Total: $%.4f\n", sum}'
+```
 
 ---
 
 ## Sister project
 
-A parallel delegate using **Gemini CLI** instead of Vibe is available at
-[pcx-wave/gemini-skill](https://github.com/pcx-wave/gemini-skill).
-Same orchestration pattern, same run log format — different model and trade-offs.
+A parallel delegate using **Gemini CLI** is available at [pcx-wave/gemini-skill](https://github.com/pcx-wave/gemini-skill). Same orchestration pattern, same run log format — different model and trade-offs.
+
+---
+
+<details>
+<summary>Known bugs in Vibe (and workarounds)</summary>
+
+| Bug | Workaround |
+|-----|-----------|
+| `search_replace failed` on UTF-8/emoji | Edit with `python3 str.replace()` instead |
+| Duplicated code block at end of file | `git diff`, delete the duplicate manually |
+| Variable declared twice in same scope | Grep the var name before relaunching |
+| Prompt truncated silently | Use the temp-file path (already default in vibe-delegate) |
+
+See `examples/anti-patterns.md` for full examples with root causes.
+</details>
+
+---
+
+## Feedback
+
+See `/tmp/retour_claude_vibe.txt` in this repo for the original feedback from Claude that led to the improvements in `vibe-delegate`.
 
 ---
 
