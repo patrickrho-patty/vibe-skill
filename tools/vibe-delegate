@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# vibe-delegate — Runs Vibe programmatically and captures structured output
+# Usage: vibe-delegate <workdir> <prompt> [max-turns] [agent] [timeout-secs]
+#
+# ROOT CAUSE FIX: vibe checks for a TTY on startup. Without one (e.g. when
+# piped directly), it hangs indefinitely — 0 tool calls, silent timeout.
+# Fix: wrap vibe in `script -q -c "..." /dev/null` to allocate a pseudo-TTY.
+#
+# PROMPT SAFETY: prompts with Python code, dicts, colons, emojis, or accented
+# chars are passed via a temp file (printf %q) — avoids shell injection/truncation.
+#
+# POST-RUN: automatically syntax-checks modified .py and .js files.
+
+set -euo pipefail
+
+WORKDIR="${1:?Usage: vibe-delegate <workdir> <prompt> [max-turns] [agent] [timeout-secs]}"
+PROMPT="${2:?Prompt required}"
+MAX_TURNS="${3:-10}"
+AGENT="${4:-}"
+TIMEOUT_SECS="${5:-180}"
+
+if [ ! -d "$WORKDIR" ]; then
+  echo "ERROR: workdir '$WORKDIR' does not exist" >&2
+  exit 1
+fi
+
+cd "$WORKDIR"
+GIT_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
+FILES_BEFORE=$(git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
+
+echo "=== VIBE START ==="
+echo "Workdir : $WORKDIR"
+echo "Agent   : ${AGENT:-default}"
+echo "Turns   : $MAX_TURNS"
+echo "Timeout : ${TIMEOUT_SECS}s"
+echo "Prompt  : ${PROMPT:0:120}..."
+echo "==================="
+
+# Write prompt to a temp file — avoids shell injection when prompt contains
+# colons, quotes, emojis, accented chars, or multi-line Python/JS code.
+PROMPT_FILE=$(mktemp /tmp/vibe-prompt-XXXXXX.txt)
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
+
+# Write the vibe command to a temp script.
+VIBE_SCRIPT=$(mktemp /tmp/vibe-cmd-XXXXXX.sh)
+trap 'rm -f "$VIBE_SCRIPT" "$PROMPT_FILE" /tmp/vibe-syntax-err.txt 2>/dev/null' EXIT
+
+{
+  echo '#!/usr/bin/env bash'
+  echo "PROMPT_CONTENT=$(printf '%q' "$(cat "$PROMPT_FILE")")"
+  if [ -n "$AGENT" ]; then
+    printf 'exec vibe --agent %q -p "$PROMPT_CONTENT" --trust --max-turns %q --output streaming --workdir %q\n' \
+      "$AGENT" "$MAX_TURNS" "$WORKDIR"
+  else
+    printf 'exec vibe -p "$PROMPT_CONTENT" --trust --max-turns %q --output streaming --workdir %q\n' \
+      "$MAX_TURNS" "$WORKDIR"
+  fi
+} > "$VIBE_SCRIPT"
+chmod +x "$VIBE_SCRIPT"
+
+# Run vibe inside `script` to give it a pseudo-TTY (required).
+set +e
+timeout "$TIMEOUT_SECS" script -q -c "$VIBE_SCRIPT" /dev/null | python3 -c "
+import sys, json, re
+
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfhilmnprsu]|\x1b\([AB]|\x0f|\x0e')
+tools_called = 0
+
+def clean(line):
+    line = line.replace('\r', '')
+    return ANSI_RE.sub('', line).strip()
+
+for raw in sys.stdin:
+    line = clean(raw)
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    role    = msg.get('role', '')
+    content = msg.get('content', '') or ''
+
+    if role in ('system', 'user'):
+        continue
+
+    if role == 'assistant':
+        text = content.strip()
+        if not text:
+            continue
+        print(f'  [vibe] {text[:400]}', flush=True)
+
+    elif role == 'tool':
+        tools_called += 1
+        first_line = content.split('\n')[0] if content else ''
+        tool_name  = msg.get('tool', '') or msg.get('name', '')
+
+        if 'write' in tool_name.lower() or 'edit' in tool_name.lower():
+            filepath = msg.get('path') or msg.get('file_path') or ''
+            print(f'  [tool]  file: {filepath or first_line[:80]}', flush=True)
+        elif first_line.startswith('path:'):
+            print(f'  [read]  {first_line[5:].strip()}', flush=True)
+        elif 'search_replace' in tool_name.lower() or 'SEARCH' in content:
+            status = 'FAIL' if 'failed' in content.lower() else 'OK'
+            print(f'  [tool]  search_replace [{status}] {first_line[:80]}', flush=True)
+        elif first_line.startswith('error') or 'Error' in first_line or 'failed' in first_line.lower():
+            print(f'  [WARN]  {first_line[:120]}', flush=True)
+        elif 'matches:' in first_line or 'grep' in tool_name.lower():
+            print(f'  [tool]  matches: {first_line[:100]}', flush=True)
+        elif 'command' in tool_name.lower():
+            print(f'  [tool]  command: {first_line[:100]}', flush=True)
+        else:
+            print(f'  [tool]  {(first_line or content)[:100]}', flush=True)
+
+print(f'Tool calls: {tools_called}')
+"
+VIBE_EXIT=$?
+set -e
+
+echo ""
+if [ "$VIBE_EXIT" -eq 124 ]; then
+  echo "=== VIBE TIMEOUT (>${TIMEOUT_SECS}s) — killed ==="
+else
+  echo "=== VIBE DONE (exit: $VIBE_EXIT) ==="
+fi
+
+# ── Post-run syntax checks ─────────────────────────────────────────────────────
+FILES_AFTER=$(git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
+CHANGED=$(comm -13 <(echo "$FILES_BEFORE" | sort) <(echo "$FILES_AFTER" | sort) 2>/dev/null || true)
+
+PY_ERRORS=0; JS_ERRORS=0; CHECKED=0
+
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  if [[ "$f" == *.py ]] && [ -f "$f" ]; then
+    if ! python3 -m py_compile "$f" 2>/tmp/vibe-syntax-err.txt; then
+      echo "  [SYNTAX ERROR] $f: $(cat /tmp/vibe-syntax-err.txt)"
+      PY_ERRORS=$((PY_ERRORS+1))
+    fi
+    CHECKED=$((CHECKED+1))
+  elif [[ "$f" == *.js ]] && [ -f "$f" ] && command -v node &>/dev/null; then
+    if ! node --check "$f" 2>/tmp/vibe-syntax-err.txt; then
+      echo "  [SYNTAX ERROR] $f: $(cat /tmp/vibe-syntax-err.txt)"
+      JS_ERRORS=$((JS_ERRORS+1))
+    fi
+    CHECKED=$((CHECKED+1))
+  fi
+done <<< "$CHANGED"
+
+if [ "$CHECKED" -gt 0 ]; then
+  TOTAL=$((PY_ERRORS+JS_ERRORS))
+  if [ "$TOTAL" -eq 0 ]; then
+    echo "=== SYNTAX OK ($CHECKED file(s) checked) ==="
+  else
+    echo "=== SYNTAX ERRORS: $TOTAL in $CHECKED file(s) — fix before committing ==="
+  fi
+fi
+
+# ── Git summary ────────────────────────────────────────────────────────────────
+GIT_AFTER=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
+
+if [ "$GIT_BEFORE" != "$GIT_AFTER" ]; then
+  echo ""
+  echo "=== COMMITS CREATED ==="
+  git log "$GIT_BEFORE".."$GIT_AFTER" --oneline
+  echo ""
+  echo "=== DIFF STAT ==="
+  git diff "$GIT_BEFORE".."$GIT_AFTER" --stat
+else
+  echo ""
+  echo "=== UNCOMMITTED CHANGES ==="
+  git diff --stat 2>/dev/null || echo "(no git)"
+  git status --short 2>/dev/null
+fi
+
+exit $VIBE_EXIT
