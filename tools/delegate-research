@@ -51,7 +51,7 @@ def jina_search(query: str) -> str:
     try:
         result = subprocess.run(
             ['python3', JINA_SCRIPT, 'search', query],
-            capture_output=True, text=True, timeout=45
+            capture_output=True, text=True, timeout=190
         )
         return result.stdout[:8000] if result.returncode == 0 else f"Search failed: {result.stderr[:200]}"
     except Exception as e:
@@ -71,7 +71,7 @@ def jina_read(url: str) -> str:
     try:
         result = subprocess.run(
             ['python3', JINA_SCRIPT, 'read', url],
-            capture_output=True, text=True, timeout=45
+            capture_output=True, text=True, timeout=190
         )
         return result.stdout[:4000] if result.returncode == 0 else f"Read failed: {result.stderr[:200]}"
     except Exception as e:

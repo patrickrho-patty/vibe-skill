@@ -44,7 +44,7 @@ def find_api_key() -> str:
     return ''
 
 
-def jina_request(url: str, api_key: str, timeout: int = 30) -> str:
+def jina_request(url: str, api_key: str, timeout: int = 180) -> str:
     auth = api_key if api_key.startswith('Bearer ') else f'Bearer {api_key}'
     try:
         result = subprocess.run(

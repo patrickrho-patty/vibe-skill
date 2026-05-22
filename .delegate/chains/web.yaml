@@ -1,5 +1,5 @@
 name: web
-description: SOTA decomposes topic → 4 agents search sequentially → GLM aggregates
+description: SOTA decomposes topic → 4 agents search via jina-search → GLM aggregates
 
 steps:
   - role: decomposer
@@ -10,28 +10,132 @@ steps:
     harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
-    prompt_template: "You are researcher 1 of 4. Search the web for SUBTOPIC 1 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the FIRST subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 1 (Researcher 1)'"
+    prompt_template: |
+      You are researcher 1 of 4. Search the web for SUBTOPIC 1 from the plan.
+
+      PLAN:
+      {plan}
+
+      WEB SEARCH TOOL:
+      To search the web, run this command:
+        python3 .claude/vibe-skill/tools/jina-search search "<your query>"
+      To deep-read a specific URL:
+        python3 .claude/vibe-skill/tools/jina-search read "<url>"
+
+      INSTRUCTIONS:
+      1. Extract the FIRST subtopic query from the plan
+      2. Run jina-search with that query
+      3. Pick the 2-3 most relevant URLs from the results
+      4. Run jina-search read on each URL to get full content
+      5. Extract key facts, data points, and recommendations WITH source URLs
+
+      Append your findings to .delegate/web-research-raw.md under a header '## Subtopic 1 (Researcher 1)'.
+      Every fact must cite the source URL where you found it.
 
   - role: researcher-2
     harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
-    prompt_template: "You are researcher 2 of 4. Search the web for SUBTOPIC 2 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the SECOND subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 2 (Researcher 2)'"
+    prompt_template: |
+      You are researcher 2 of 4. Search the web for SUBTOPIC 2 from the plan.
+
+      PLAN:
+      {plan}
+
+      WEB SEARCH TOOL:
+      To search the web, run this command:
+        python3 .claude/vibe-skill/tools/jina-search search "<your query>"
+      To deep-read a specific URL:
+        python3 .claude/vibe-skill/tools/jina-search read "<url>"
+
+      INSTRUCTIONS:
+      1. Extract the SECOND subtopic query from the plan
+      2. Run jina-search with that query
+      3. Pick the 2-3 most relevant URLs from the results
+      4. Run jina-search read on each URL to get full content
+      5. Extract key facts, data points, and recommendations WITH source URLs
+
+      Append your findings to .delegate/web-research-raw.md under a header '## Subtopic 2 (Researcher 2)'.
+      Every fact must cite the source URL where you found it.
 
   - role: researcher-3
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "You are researcher 3 of 4. Search the web for SUBTOPIC 3 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the THIRD subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 3 (Researcher 3)'"
+    prompt_template: |
+      You are researcher 3 of 4. Search the web for SUBTOPIC 3 from the plan.
+
+      PLAN:
+      {plan}
+
+      WEB SEARCH TOOL:
+      To search the web, run this command:
+        python3 .claude/vibe-skill/tools/jina-search search "<your query>"
+      To deep-read a specific URL:
+        python3 .claude/vibe-skill/tools/jina-search read "<url>"
+
+      INSTRUCTIONS:
+      1. Extract the THIRD subtopic query from the plan
+      2. Run jina-search with that query
+      3. Pick the 2-3 most relevant URLs from the results
+      4. Run jina-search read on each URL to get full content
+      5. Extract key facts, data points, and recommendations WITH source URLs
+
+      Append your findings to .delegate/web-research-raw.md under a header '## Subtopic 3 (Researcher 3)'.
+      Every fact must cite the source URL where you found it.
 
   - role: researcher-4
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "You are researcher 4 of 4. Search the web for SUBTOPIC 4 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the FOURTH subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 4 (Researcher 4)'"
+    prompt_template: |
+      You are researcher 4 of 4. Search the web for SUBTOPIC 4 from the plan.
+
+      PLAN:
+      {plan}
+
+      WEB SEARCH TOOL:
+      To search the web, run this command:
+        python3 .claude/vibe-skill/tools/jina-search search "<your query>"
+      To deep-read a specific URL:
+        python3 .claude/vibe-skill/tools/jina-search read "<url>"
+
+      INSTRUCTIONS:
+      1. Extract the FOURTH subtopic query from the plan
+      2. Run jina-search with that query
+      3. Pick the 2-3 most relevant URLs from the results
+      4. Run jina-search read on each URL to get full content
+      5. Extract key facts, data points, and recommendations WITH source URLs
+
+      Append your findings to .delegate/web-research-raw.md under a header '## Subtopic 4 (Researcher 4)'.
+      Every fact must cite the source URL where you found it.
 
   - role: aggregator
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "Aggregate and organize web research results.\n\nORIGINAL TOPIC: {task}\n\nSUBTOPICS:\n{plan}\n\nRead .delegate/web-research-raw.md (all 4 researchers' findings) and produce a clean report.\n\nWrite to .delegate/web-research-report.md:\n\n## Summary\n[2-3 sentence executive summary]\n\n## Key Findings\n[Organized by subtopic, deduplicated, with source citations]\n\n## Recommendations\n[Actionable takeaways]\n\n## Sources\n[All URLs cited]\n\nRemove duplicates. Keep the most detailed version of each finding. Every claim must have a source URL."
+    prompt_template: |
+      Aggregate and organize web research results.
+
+      ORIGINAL TOPIC: {task}
+
+      SUBTOPICS:
+      {plan}
+
+      Read .delegate/web-research-raw.md (all 4 researchers' findings) and produce a clean report.
+
+      Write to .delegate/web-research-report.md:
+
+      ## Summary
+      [2-3 sentence executive summary]
+
+      ## Key Findings
+      [Organized by subtopic, deduplicated, with inline source citations]
+
+      ## Recommendations
+      [Actionable takeaways]
+
+      ## Sources
+      [All URLs cited, numbered]
+
+      Remove duplicates. Keep the most detailed version of each finding. Every claim must have a source URL.
