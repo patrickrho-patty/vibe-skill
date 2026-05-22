@@ -165,11 +165,17 @@ git clone https://github.com/pcx-wave/vibe-skill.git .claude/vibe-skill
 chmod +x .claude/vibe-skill/tools/delegate* .claude/vibe-skill/tools/adapters/*
 ```
 
-### For Codex (optional, in addition to above)
+### For Codex (automatic)
 
-```bash
-mkdir -p .codex
-cp .claude/vibe-skill/CODEX-SKILL.md .codex/AGENTS.md
+Codex auto-discovers skills from `.agents/skills/` — included in the clone. No extra setup needed.
+
+```
+$vibe add a login page          ← same as /vibe in Claude Code
+$vibeon                         ← enable auto-delegate
+$vibeoff                        ← disable auto-delegate
+$vibestatus                     ← show status
+$vibe-model-pick minimax/MiniMax-M2.7
+$vibe-report --since 7
 ```
 
 ### What this gives you
@@ -178,16 +184,20 @@ cp .claude/vibe-skill/CODEX-SKILL.md .codex/AGENTS.md
 your-project/
   .claude/
     vibe-skill/           ← this repo, cloned here
-      SKILL.md            ← Claude Code picks this up as a skill
-      CODEX-SKILL.md      ← copy to .codex/AGENTS.md for Codex
+      SKILL.md            ← Claude Code picks this up as a skill (/vibe)
       tools/
         delegate           ← main entry point
         adapters/          ← vibe, pi, opencode
         delegate-*         ← all 20 tools
       .delegate/
         chains/            ← pre-built chain configs
-  .codex/
-    AGENTS.md             ← (optional) Codex orchestrator instructions
+      .agents/
+        skills/            ← Codex picks these up ($vibe, $vibeon, etc.)
+          vibe/SKILL.md
+          vibeon/SKILL.md
+          vibeoff/SKILL.md
+          ...
+
 ```
 
 Claude Code auto-discovers skills under `.claude/` — no symlinks needed.
