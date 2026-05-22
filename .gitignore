@@ -4,3 +4,7 @@
 /tmp/
 .delegate/project-brief.md
 .delegate/correction-prompt.txt
+.delegate/runs.jsonl
+.delegate/sessions/
+.delegate/failures.jsonl
+.delegate/learnings.jsonl

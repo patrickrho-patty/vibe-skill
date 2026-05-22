@@ -70,7 +70,8 @@ tokens_in = 0
 tokens_out = 0
 
 # Session recording
-session_dir = os.path.expanduser('~/.local/share/delegate-sessions')
+workdir = os.environ.get('DELEGATE_WORKDIR', os.getcwd())
+session_dir = os.path.join(workdir, '.delegate', 'sessions')
 os.makedirs(session_dir, exist_ok=True)
 session_file = os.path.join(
     session_dir,

@@ -5,24 +5,24 @@ Records diff-of-diff when orchestrator corrects harness output.
 
 Usage:
   delegate-learnings record <workdir> <harness> <original-prompt> <correction-diff-file>
-  delegate-learnings analyze [--harness NAME] [--since DAYS]
-  delegate-learnings suggest <harness> [task-type]
+  delegate-learnings analyze [--workdir DIR] [--harness NAME] [--since DAYS]
+  delegate-learnings suggest <workdir> <harness> [task-type]
 """
 import sys, os, json, re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from collections import Counter
 
-LOG = Path.home() / '.local' / 'share' / 'delegate-learnings.jsonl'
-
-def ensure_log():
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    if not LOG.exists():
-        LOG.touch()
+def get_log_path(workdir: str) -> Path:
+    log = Path(workdir) / '.delegate' / 'learnings.jsonl'
+    log.parent.mkdir(parents=True, exist_ok=True)
+    if not log.exists():
+        log.touch()
+    return log
 
 def record(workdir: str, harness: str, original_prompt: str, correction_diff_file: str):
     """Record a learning from a correction."""
-    ensure_log()
+    LOG = get_log_path(workdir)
 
     # Read the correction diff
     diff_content = ''
@@ -73,9 +73,9 @@ def classify_correction(diff: str) -> str:
         return 'minor_fix'
     return 'general_correction'
 
-def analyze(harness_filter: str = '', since_days: int = 30):
+def analyze(workdir: str = '', harness_filter: str = '', since_days: int = 30):
     """Analyze correction patterns."""
-    ensure_log()
+    LOG = get_log_path(workdir or os.getcwd())
     cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
 
     try:
@@ -127,9 +127,9 @@ def analyze(harness_filter: str = '', since_days: int = 30):
 
     print("")
 
-def suggest(harness: str, task_type: str = ''):
+def suggest(workdir: str, harness: str, task_type: str = ''):
     """Suggest prompt improvements based on learnings."""
-    ensure_log()
+    LOG = get_log_path(workdir)
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
     try:
@@ -189,12 +189,16 @@ def main():
         record(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
 
     elif action == 'analyze':
+        workdir = ''
         harness = ''
         since = 30
         args = sys.argv[2:]
         i = 0
         while i < len(args):
-            if args[i] == '--harness' and i + 1 < len(args):
+            if args[i] == '--workdir' and i + 1 < len(args):
+                workdir = args[i + 1]
+                i += 2
+            elif args[i] == '--harness' and i + 1 < len(args):
                 harness = args[i + 1]
                 i += 2
             elif args[i] == '--since' and i + 1 < len(args):
@@ -202,15 +206,16 @@ def main():
                 i += 2
             else:
                 i += 1
-        analyze(harness, since)
+        analyze(workdir, harness, since)
 
     elif action == 'suggest':
-        harness = sys.argv[2] if len(sys.argv) > 2 else ''
-        task_type = sys.argv[3] if len(sys.argv) > 3 else ''
-        if not harness:
-            print("Usage: delegate-learnings suggest <harness> [task-type]", file=sys.stderr)
+        if len(sys.argv) < 4:
+            print("Usage: delegate-learnings suggest <workdir> <harness> [task-type]", file=sys.stderr)
             sys.exit(1)
-        suggest(harness, task_type)
+        workdir = sys.argv[2]
+        harness = sys.argv[3]
+        task_type = sys.argv[4] if len(sys.argv) > 4 else ''
+        suggest(workdir, harness, task_type)
 
     else:
         print(f"Unknown action: {action}", file=sys.stderr)

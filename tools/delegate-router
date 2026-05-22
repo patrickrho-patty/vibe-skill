@@ -7,8 +7,14 @@ import os
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
-RUNS_FILE = os.path.expanduser("~/.local/share/delegate-runs.jsonl")
 HARNESSES = ["vibe", "pi", "opencode"]
+
+
+def get_runs_file(workdir: str = '') -> str:
+    wd = workdir or os.getcwd()
+    runs_file = os.path.join(wd, '.delegate', 'runs.jsonl')
+    os.makedirs(os.path.dirname(runs_file), exist_ok=True)
+    return runs_file
 TASK_TYPES = [
     "refactor", "bugfix", "test", "docs", "greenfield",
     "modification", "removal", "frontend", "api", "database", "general"
@@ -42,9 +48,10 @@ def classify_task(description: str) -> str:
     return 'general'
 
 
-def load_runs(since_days: int = None):
+def load_runs(since_days: int = None, workdir: str = ''):
     """Load runs from the JSONL file, optionally filtered by days."""
-    if not os.path.exists(RUNS_FILE):
+    runs_file = get_runs_file(workdir)
+    if not os.path.exists(runs_file):
         return []
 
     runs = []
@@ -53,7 +60,7 @@ def load_runs(since_days: int = None):
         cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
 
     try:
-        with open(RUNS_FILE, "r") as f:
+        with open(runs_file, "r") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -158,13 +165,26 @@ def cmd_classify(args):
 
 
 def cmd_recommend(args):
+    # Extract optional --workdir flag
+    workdir = ''
+    filtered_args = []
+    i = 0
+    while i < len(args):
+        if args[i] == '--workdir' and i + 1 < len(args):
+            workdir = args[i + 1]
+            i += 2
+        else:
+            filtered_args.append(args[i])
+            i += 1
+    args = filtered_args
+
     if not args:
-        print("Usage: delegate-router recommend <task-description>", file=sys.stderr)
+        print("Usage: delegate-router recommend <task-description> [--workdir DIR]", file=sys.stderr)
         sys.exit(1)
     description = " ".join(args)
     task_type = classify_task(description)
 
-    runs = load_runs()
+    runs = load_runs(workdir=workdir)
     table = compute_table(runs)
 
     best = recommend(task_type, table)
@@ -175,7 +195,7 @@ def cmd_recommend(args):
 
     if not runs:
         print("Note: No run data found — using cold-start default (vibe).")
-        print(f"      Data would be loaded from: {RUNS_FILE}")
+        print(f"      Data would be loaded from: {get_runs_file(workdir)}")
         return
 
     print("Reasoning:")
@@ -200,6 +220,7 @@ def cmd_recommend(args):
 
 def cmd_table(args):
     since_days = 30
+    workdir = ''
     if "--since" in args:
         idx = args.index("--since")
         if idx + 1 < len(args):
@@ -208,12 +229,16 @@ def cmd_table(args):
             except ValueError:
                 print("Error: --since requires an integer number of days", file=sys.stderr)
                 sys.exit(1)
+    if "--workdir" in args:
+        idx = args.index("--workdir")
+        if idx + 1 < len(args):
+            workdir = args[idx + 1]
 
-    runs = load_runs(since_days=since_days)
+    runs = load_runs(since_days=since_days, workdir=workdir)
 
     if not runs:
         print("No run data found.")
-        print(f"Expected data file: {RUNS_FILE}")
+        print(f"Expected data file: {get_runs_file(workdir)}")
         print()
         print("Default recommendation: vibe (cold start)")
         return

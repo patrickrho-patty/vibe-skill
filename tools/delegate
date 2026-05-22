@@ -10,7 +10,7 @@
 #   truncation bugs.
 #
 # RUN LOG (2026-05-12):
-#   Appends one JSONL entry to ~/.local/share/delegate-runs.jsonl after each run.
+#   Appends one JSONL entry to $WORKDIR/.delegate/runs.jsonl after each run.
 #   Fields: ts, harness, delegate, project, prompt_words, agent, max_turns,
 #           timeout_secs, exit_code, timed_out, tool_calls, files_changed,
 #           syntax_errors, duration_secs, tokens_in, tokens_out, tokens_total,
@@ -37,16 +37,12 @@ if [ ! -d "$WORKDIR" ]; then
   exit 1
 fi
 
-# Model override: read alias from flag file.
+# Model override: read from per-project flag file.
 # DELEGATE_ACTIVE_MODEL and VIBE_ACTIVE_MODEL are exported for adapters to inherit.
-# Falls back to legacy vibe-model.flag for backward compatibility.
-DELEGATE_MODEL_FLAG="$HOME/.local/share/delegate-model.flag"
-LEGACY_MODEL_FLAG="$HOME/.local/share/vibe-model.flag"
+DELEGATE_MODEL_FLAG="$WORKDIR/.delegate/model.flag"
 DELEGATE_MODEL_OVERRIDE=""
 if [ -f "$DELEGATE_MODEL_FLAG" ]; then
   DELEGATE_MODEL_OVERRIDE=$(tr -d '[:space:]' < "$DELEGATE_MODEL_FLAG")
-elif [ -f "$LEGACY_MODEL_FLAG" ]; then
-  DELEGATE_MODEL_OVERRIDE=$(tr -d '[:space:]' < "$LEGACY_MODEL_FLAG")
 fi
 if [ -n "$DELEGATE_MODEL_OVERRIDE" ]; then
   export DELEGATE_ACTIVE_MODEL="$DELEGATE_MODEL_OVERRIDE"
@@ -287,7 +283,7 @@ import json, os
 from pathlib import Path
 from datetime import datetime, timezone
 
-LOG = Path.home() / '.local' / 'share' / 'delegate-runs.jsonl'
+LOG = Path(os.environ.get('DELEGATE_WORKDIR', '')) / '.delegate' / 'runs.jsonl'
 LOG.parent.mkdir(parents=True, exist_ok=True)
 
 sf = os.environ.get('DELEGATE_STATS_FILE', '')

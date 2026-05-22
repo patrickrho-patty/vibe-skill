@@ -6,22 +6,22 @@ Records failures and queries relevant ones to improve future prompts.
 Usage:
   delegate-failures record <workdir> <harness> <error_type> <symptom> <fix_applied> [file]
   delegate-failures query <workdir> [file1] [file2] ...
-  delegate-failures prune
+  delegate-failures prune <workdir>
 """
 import sys, os, json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-LOG = Path.home() / '.local' / 'share' / 'delegate-failures.jsonl'
-
-def ensure_log():
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    if not LOG.exists():
-        LOG.touch()
+def get_log_path(workdir: str) -> Path:
+    log = Path(workdir) / '.delegate' / 'failures.jsonl'
+    log.parent.mkdir(parents=True, exist_ok=True)
+    if not log.exists():
+        log.touch()
+    return log
 
 def record(workdir: str, harness: str, error_type: str, symptom: str, fix_applied: str, file: str = ''):
     """Record a failure."""
-    ensure_log()
+    LOG = get_log_path(workdir)
     entry = {
         'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'workdir': workdir,
@@ -36,9 +36,10 @@ def record(workdir: str, harness: str, error_type: str, symptom: str, fix_applie
         f.write(json.dumps(entry) + '\n')
     print(f"[failure-memory] Recorded: {error_type} in {file or 'unknown'} ({harness})")
 
+
 def query(workdir: str, files: list[str]) -> list[dict]:
     """Query relevant failures for the given workdir/files."""
-    ensure_log()
+    LOG = get_log_path(workdir)
     project = os.path.basename(workdir)
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     relevant = []
@@ -95,9 +96,9 @@ def query(workdir: str, files: list[str]) -> list[dict]:
 
     return unique
 
-def prune():
+def prune(workdir: str):
     """Remove entries older than 30 days."""
-    ensure_log()
+    LOG = get_log_path(workdir)
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     kept = []
     removed = 0
@@ -151,7 +152,11 @@ def main():
         query(workdir, files)
 
     elif action == 'prune':
-        prune()
+        if len(sys.argv) < 3:
+            print("Usage: delegate-failures prune <workdir>", file=sys.stderr)
+            sys.exit(1)
+        workdir = sys.argv[2]
+        prune(workdir)
 
     else:
         print(f"Unknown action: {action}", file=sys.stderr)

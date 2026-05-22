@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
 delegate-dashboard — live delegation dashboard
-Usage: delegate-dashboard [--refresh SECS] [--project NAME]
+Usage: delegate-dashboard [--refresh SECS] [--project NAME] [--dir WORKDIR]
 """
 import sys, os, json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
-LOG = Path.home() / '.local' / 'share' / 'delegate-runs.jsonl'
+def get_log_path(workdir: str = '') -> Path:
+    wd = workdir or os.getcwd()
+    return Path(wd) / '.delegate' / 'runs.jsonl'
 
 
-def load_runs(project_filter: str = '') -> list:
-    if not LOG.exists():
+def load_runs(project_filter: str = '', workdir: str = '') -> list:
+    log = get_log_path(workdir)
+    if not log.exists():
         return []
     entries = []
-    for line in LOG.read_text().splitlines():
+    for line in log.read_text().splitlines():
         if not line.strip():
             continue
         try:
@@ -129,7 +132,7 @@ def plain_dashboard(runs: list):
     print("")
 
 
-def build_rich_display(console, project_filter: str):
+def build_rich_display(console, project_filter: str, workdir: str = ''):
     """Build and render the rich dashboard. Returns False to stop, True to continue."""
     from rich.table import Table
     from rich.panel import Panel
@@ -137,7 +140,7 @@ def build_rich_display(console, project_filter: str):
 
     now = datetime.now(timezone.utc)
     today = now.date()
-    current_runs = load_runs(project_filter)
+    current_runs = load_runs(project_filter, workdir)
 
     console.clear()
 
@@ -254,7 +257,7 @@ def build_rich_display(console, project_filter: str):
     return True
 
 
-def rich_dashboard(runs: list, refresh: int, project_filter: str):
+def rich_dashboard(runs: list, refresh: int, project_filter: str, workdir: str = ''):
     """Rich TUI dashboard with optional auto-refresh."""
     import time
     from rich.console import Console
@@ -264,18 +267,19 @@ def rich_dashboard(runs: list, refresh: int, project_filter: str):
     if refresh > 0:
         try:
             while True:
-                build_rich_display(console, project_filter)
+                build_rich_display(console, project_filter, workdir)
                 console.print(f"\n[dim]Refreshing every {refresh}s — Ctrl+C to quit[/dim]")
                 time.sleep(refresh)
         except KeyboardInterrupt:
             print("\nDashboard stopped.")
     else:
-        build_rich_display(console, project_filter)
+        build_rich_display(console, project_filter, workdir)
 
 
 def main():
     refresh = 0
     project = ''
+    workdir = ''
 
     args = sys.argv[1:]
     i = 0
@@ -286,14 +290,17 @@ def main():
         elif args[i] == '--project' and i + 1 < len(args):
             project = args[i + 1]
             i += 2
+        elif args[i] == '--dir' and i + 1 < len(args):
+            workdir = args[i + 1]
+            i += 2
         else:
             i += 1
 
-    runs = load_runs(project)
+    runs = load_runs(project, workdir)
 
     try:
         import rich  # noqa: F401
-        rich_dashboard(runs, refresh, project)
+        rich_dashboard(runs, refresh, project, workdir)
     except ImportError:
         plain_dashboard(runs)
 
