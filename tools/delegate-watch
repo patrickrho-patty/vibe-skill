@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""
+delegate-watch — live TUI showing current delegation progress.
+
+Usage:
+  delegate-watch <workdir>                    Watch the latest session
+  delegate-watch <workdir> --session <file>   Watch a specific session
+"""
+import sys
+import os
+import json
+import time
+from pathlib import Path
+from datetime import datetime
+
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.live import Live
+    from rich.text import Text
+    from rich import box
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
+
+
+def find_latest_session(workdir: str) -> str:
+    session_dir = Path(workdir) / '.delegate' / 'sessions'
+    if not session_dir.exists():
+        return ''
+    files = sorted(session_dir.glob('*.jsonl'), key=lambda f: f.stat().st_mtime, reverse=True)
+    return str(files[0]) if files else ''
+
+
+def parse_session(session_file: str) -> dict:
+    events = []
+    tool_calls = 0
+    warns = 0
+    model = 'unknown'
+    last_text = ''
+    files_touched = set()
+    reads = []
+    edits = []
+
+    try:
+        with open(session_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                events.append(msg)
+                event_type = msg.get('type', '')
+                item = msg.get('item', {}) or {}
+                item_type = item.get('type', '')
+
+                if msg.get('model'):
+                    model = msg['model']
+                if isinstance(msg.get('session'), dict):
+                    m = msg['session'].get('model', '')
+                    if m:
+                        model = m
+
+                if item_type in ('tool_call', 'function_call', 'computer_call'):
+                    tool_calls += 1
+                    name = item.get('name', '')
+                    args = item.get('arguments', '') or item.get('input', '') or ''
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
+
+                    if 'write' in name.lower() or 'edit' in name.lower():
+                        try:
+                            a = json.loads(args) if isinstance(args, str) else args
+                            fp = a.get('path', '') or a.get('file_path', '')
+                        except Exception:
+                            fp = ''
+                        if fp:
+                            files_touched.add(fp)
+                        edits.append(f"[edit] {fp or args[:60]}")
+                    elif 'read' in name.lower():
+                        reads.append(f"[read] {str(args)[:60]}")
+                    elif 'bash' in name.lower() or 'shell' in name.lower():
+                        edits.append(f"[cmd]  {str(args)[:60]}")
+                    else:
+                        edits.append(f"[tool] {name}: {str(args)[:50]}")
+
+                elif item_type == 'tool_call_output':
+                    output = str(item.get('output', ''))
+                    if 'error' in output.lower() or 'failed' in output.lower():
+                        warns += 1
+
+                elif item_type in ('message', 'text', 'agent_message'):
+                    content = item.get('content', '') or item.get('text', '') or ''
+                    if isinstance(content, list):
+                        content = ' '.join(c.get('text', '') for c in content if isinstance(c, dict))
+                    if str(content).strip():
+                        last_text = str(content).strip()
+
+                elif item_type == 'reasoning':
+                    text = item.get('text', '')
+                    if text:
+                        last_text = f"[thinking] {text.strip()[:200]}"
+
+    except Exception:
+        pass
+
+    return {
+        'events': len(events),
+        'tool_calls': tool_calls,
+        'warns': warns,
+        'model': model,
+        'last_text': last_text,
+        'files_touched': files_touched,
+        'reads': reads[-10:],
+        'edits': edits[-10:],
+        'activity': (reads + edits)[-15:],
+    }
+
+
+def plain_watch(workdir: str, session_file: str):
+    print(f"Watching: {session_file}")
+    print(f"Press Ctrl+C to stop\n")
+
+    last_size = 0
+    while True:
+        try:
+            current_size = os.path.getsize(session_file)
+        except OSError:
+            current_size = 0
+
+        if current_size != last_size:
+            last_size = current_size
+            state = parse_session(session_file)
+            os.system('clear')
+            print(f"=== DELEGATION LIVE ({datetime.now().strftime('%H:%M:%S')}) ===")
+            print(f"Session: {os.path.basename(session_file)}")
+            print(f"Model  : {state['model']}")
+            print(f"Events : {state['events']}  Tools: {state['tool_calls']}  Warns: {state['warns']}")
+            print(f"Files  : {', '.join(state['files_touched']) or '(none yet)'}")
+            print(f"\n--- Activity ---")
+            for line in state['activity']:
+                print(f"  {line}")
+            if state['last_text']:
+                print(f"\n--- Last message ---")
+                print(f"  {state['last_text'][:300]}")
+            print(f"\n(watching... Ctrl+C to stop)")
+
+        time.sleep(1)
+
+
+def rich_watch(workdir: str, session_file: str):
+    console = Console()
+
+    def build_display():
+        try:
+            current_size = os.path.getsize(session_file)
+        except OSError:
+            current_size = 0
+
+        state = parse_session(session_file)
+        now = datetime.now().strftime('%H:%M:%S')
+
+        header = f"[bold]Model:[/] {state['model']}  [bold]Events:[/] {state['events']}  [bold]Tools:[/] {state['tool_calls']}  [bold]Warns:[/] {state['warns']}"
+        files_str = ', '.join(state['files_touched']) or '(none yet)'
+
+        activity_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
+        activity_table.add_column("Activity", style="dim")
+        for line in state['activity']:
+            style = ""
+            if '[edit]' in line:
+                style = "green"
+            elif '[read]' in line:
+                style = "blue"
+            elif '[cmd]' in line:
+                style = "yellow"
+            elif 'WARN' in line:
+                style = "red"
+            activity_table.add_row(Text(line, style=style))
+
+        msg_text = state['last_text'][:300] if state['last_text'] else '(waiting...)'
+
+        output = []
+        output.append(Panel(header, title=f"DELEGATION LIVE — {now}", border_style="cyan"))
+        output.append(f"[bold]Files:[/] {files_str}\n")
+        output.append(activity_table)
+        output.append(f"\n[bold]Last message:[/] {msg_text}")
+
+        console.clear()
+        for item in output:
+            if isinstance(item, str):
+                console.print(item)
+            else:
+                console.print(item)
+
+    try:
+        while True:
+            build_display()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped watching.[/dim]")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+    workdir = args[0]
+    session_file = ''
+
+    i = 1
+    while i < len(args):
+        if args[i] == '--session' and i + 1 < len(args):
+            session_file = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if not session_file:
+        session_file = find_latest_session(workdir)
+
+    if not session_file:
+        print("No session files found in .delegate/sessions/", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Watching: {session_file}")
+    print("Press Ctrl+C to stop\n")
+
+    if HAS_RICH:
+        rich_watch(workdir, session_file)
+    else:
+        plain_watch(workdir, session_file)
+
+
+if __name__ == '__main__':
+    main()

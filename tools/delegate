@@ -59,6 +59,20 @@ fi
 
 cd "$WORKDIR"
 
+# Prevent duplicate delegations on the same workdir
+DELEGATE_PID_FILE="$WORKDIR/.delegate/delegate.pid"
+mkdir -p "$WORKDIR/.delegate"
+if [ -f "$DELEGATE_PID_FILE" ]; then
+  EXISTING_PID=$(cat "$DELEGATE_PID_FILE" 2>/dev/null)
+  if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "ERROR: Another delegation is already running (PID $EXISTING_PID)" >&2
+    echo "If this is stale, remove: rm $DELEGATE_PID_FILE" >&2
+    exit 3
+  fi
+fi
+echo $$ > "$DELEGATE_PID_FILE"
+trap 'rm -f "$PROMPT_FILE" "$DELEGATE_STATS_FILE" "$DELEGATE_PID_FILE"' EXIT
+
 # Create rollback checkpoint
 CHECKPOINT=$("$(dirname "$0")/delegate-rollback" create "$WORKDIR" 2>/dev/null || echo "")
 if [ -n "$CHECKPOINT" ]; then
@@ -106,7 +120,7 @@ DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX)
 printf '{}' > "$DELEGATE_STATS_FILE"
 export DELEGATE_STATS_FILE
 
-trap 'rm -f "$PROMPT_FILE" "$DELEGATE_STATS_FILE"' EXIT
+# (trap already set above to clean up PROMPT_FILE, STATS_FILE, and PID_FILE)
 
 # Run pre-condition contracts if defined
 if [ -f "$WORKDIR/.delegate/contracts.yaml" ]; then
