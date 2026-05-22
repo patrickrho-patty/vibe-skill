@@ -106,116 +106,151 @@ def format_event(item: dict, cmd: str = '') -> tuple:
 
 
 def stream_rich(workdir: str, session_file: str):
+    from rich.panel import Panel
+    from rich.live import Live
+    from rich.layout import Layout
+    from rich.text import Text as RText
+
     console = Console()
     project = os.path.basename(os.path.abspath(workdir))
-    processed = 0
-    current_session = session_file
-    consecutive_tools = 0
+    processed = [0]
+    current_session = [session_file]
     tool_buffer = []
+    log_lines = []  # accumulated output lines (Text objects)
+    max_log = 200   # keep last N lines in memory
+    model = [read_active_model(workdir) or 'unknown']
+    events_count = [0]
+    tools_count = [0]
+    warns_count = [0]
 
     def flush_tools():
-        nonlocal consecutive_tools, tool_buffer
         if not tool_buffer:
             return
         if len(tool_buffer) <= 3:
             for t in tool_buffer:
-                console.print(Text(f"  {t}", style="dim"))
+                log_lines.append(Text(f"  {t}", style="dim"))
         else:
             for t in tool_buffer[:2]:
-                console.print(Text(f"  {t}", style="dim"))
-            console.print(Text(f"  ... +{len(tool_buffer) - 2} more tool calls", style="dim italic"))
+                log_lines.append(Text(f"  {t}", style="dim"))
+            log_lines.append(Text(f"  ... +{len(tool_buffer) - 2} more tool calls", style="dim italic"))
         tool_buffer.clear()
-        consecutive_tools = 0
 
-    # Header
-    model = read_active_model(workdir) or 'unknown'
-    console.print(Text(f"━━━ {project} ━━━ Model: {model} ━━━", style="bold cyan"))
-    console.print(Text(f"Session: {os.path.basename(session_file)}", style="dim"))
-    console.print()
+    def build_header():
+        now = datetime.now().strftime('%H:%M:%S')
+        sf_name = os.path.basename(current_session[0])
+        return Panel(
+            f"[bold]{project}[/]  Model: [cyan]{model[0]}[/]  "
+            f"Events: {events_count[0]}  Tools: {tools_count[0]}  Warns: {warns_count[0]}  "
+            f"[dim]{sf_name}[/]",
+            title=f"[bold]DELEGATION LIVE — {now}[/]",
+            border_style="cyan",
+        )
 
-    try:
-        while True:
-            # Auto-follow new sessions
-            latest = find_latest_session(workdir)
-            if latest and latest != current_session:
-                flush_tools()
-                current_session = latest
-                processed = 0
-                model = read_active_model(workdir) or model
-                console.print()
-                console.print(Text(f"━━━ Step changed ━━━ Model: {model} ━━━", style="bold yellow"))
-                console.print(Text(f"Session: {os.path.basename(current_session)}", style="dim"))
-                console.print()
+    def build_log():
+        from rich.console import Group
+        visible = log_lines[-40:]  # show last 40 lines
+        if not visible:
+            return Text("(waiting for events...)", style="dim")
+        return Group(*visible)
 
-            # Read new events
-            try:
-                with open(current_session) as f:
-                    lines = f.readlines()
-            except Exception:
-                time.sleep(1)
-                continue
+    def build_layout():
+        layout = Layout()
+        layout.split_column(
+            Layout(build_header(), name="header", size=3),
+            Layout(build_log(), name="log"),
+        )
+        return layout
 
-            new_lines = lines[processed:]
-            if not new_lines:
-                # Check for model change even without new events
-                new_model = read_active_model(workdir) or ''
-                if new_model and new_model != model:
+    with Live(build_layout(), console=console, refresh_per_second=2, screen=True) as live:
+        try:
+            while True:
+                # Auto-follow new sessions
+                latest = find_latest_session(workdir)
+                if latest and latest != current_session[0]:
                     flush_tools()
-                    model = new_model
-                    console.print()
-                    console.print(Text(f"━━━ Model: {model} ━━━", style="bold yellow"))
-                    console.print()
-                time.sleep(1)
-                continue
+                    current_session[0] = latest
+                    processed[0] = 0
+                    new_model = read_active_model(workdir)
+                    if new_model:
+                        model[0] = new_model
+                    log_lines.append(Text(""))
+                    log_lines.append(Text(f"━━━ Step changed ━━━ Model: {model[0]} ━━━", style="bold yellow"))
+                    log_lines.append(Text(""))
 
-            for line in new_lines:
-                line = line.strip()
-                if not line:
-                    continue
+                # Check model change
+                new_model = read_active_model(workdir)
+                if new_model and new_model != model[0]:
+                    model[0] = new_model
+
+                # Read new events
                 try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
+                    with open(current_session[0]) as f:
+                        lines = f.readlines()
+                except Exception:
+                    time.sleep(0.5)
+                    live.update(build_layout())
                     continue
 
-                item = msg.get('item', {}) or {}
-                event_type = msg.get('type', '')
-
-                # Skip non-item events
-                if event_type in ('thread.started', 'turn.started', 'turn.completed',
-                                  'item.started', 'exec.completed'):
+                new_lines = lines[processed[0]:]
+                if not new_lines:
+                    time.sleep(0.5)
+                    live.update(build_layout())
                     continue
 
-                etype, text = format_event(item, item.get('command', ''))
+                for line in new_lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
 
-                if etype == 'skip':
-                    continue
+                    events_count[0] += 1
+                    item = msg.get('item', {}) or {}
+                    event_type = msg.get('type', '')
 
-                if etype == 'message':
-                    flush_tools()
-                    console.print(Text(f"\n{text}\n", style="white"))
+                    if event_type in ('thread.started', 'turn.started', 'turn.completed',
+                                      'item.started', 'exec.completed'):
+                        continue
 
-                elif etype == 'thinking':
-                    flush_tools()
-                    console.print(Text(f"  💭 {text}", style="dim italic"))
+                    etype, etext = format_event(item, item.get('command', ''))
 
-                elif etype in ('tool', 'read', 'write'):
-                    style_map = {'read': 'blue', 'write': 'green', 'tool': 'yellow'}
-                    tool_buffer.append(f"[{etype}] {text}")
-                    consecutive_tools += 1
-                    # Flush periodically so user sees progress
-                    if consecutive_tools >= 6:
+                    if etype == 'skip':
+                        continue
+
+                    if etype == 'message':
                         flush_tools()
+                        log_lines.append(Text(""))
+                        log_lines.append(Text(etext, style="white"))
+                        log_lines.append(Text(""))
 
-                elif etype == 'error':
-                    flush_tools()
-                    console.print(Text(f"  ⚠ {text}", style="bold red"))
+                    elif etype == 'thinking':
+                        flush_tools()
+                        log_lines.append(Text(f"  💭 {etext}", style="dim italic"))
 
-            processed = len(lines)
-            time.sleep(0.5)
+                    elif etype in ('tool', 'read', 'write'):
+                        tools_count[0] += 1
+                        tool_buffer.append(f"[{etype}] {etext}")
+                        if len(tool_buffer) >= 6:
+                            flush_tools()
 
-    except KeyboardInterrupt:
-        flush_tools()
-        console.print(Text("\nStopped.", style="dim"))
+                    elif etype == 'error':
+                        flush_tools()
+                        warns_count[0] += 1
+                        log_lines.append(Text(f"  ⚠ {etext}", style="bold red"))
+
+                # Trim log
+                if len(log_lines) > max_log:
+                    del log_lines[:len(log_lines) - max_log]
+
+                processed[0] = len(lines)
+                flush_tools()
+                live.update(build_layout())
+                time.sleep(0.5)
+
+        except KeyboardInterrupt:
+            pass
 
 
 def stream_plain(workdir: str, session_file: str):
