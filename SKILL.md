@@ -15,6 +15,59 @@ allowed-tools:
 
 # Delegate Orchestrator
 
+## /vibe help
+
+When the user says `/vibe help` (or `$vibe help`), print this help text directly
+to the console and stop:
+
+```
+vibe — AI delegation framework
+
+USAGE
+  /vibe <instruction>                    Direct delegation (simple mode)
+  /vibe <mode>: <instruction>            Inline mode (one-shot)
+  /vibe help                             This help text
+
+MODES (inline or persistent via /vibe-mode)
+  simple      Direct delegation, no chain (default)
+  steady      SOTA plans → implement → validate
+  quick       Implement → review (no planning)
+  fix         SOTA investigates → fix → validate
+  architect   SOTA plans → implement → validate
+  fortress    SOTA plans → implement → test → security
+  ironclad    Fortress + final review (5 steps)
+  tournament  4 models race, GLM judges the winner
+  race        2 models compete on same task
+  docs        SOTA outlines → write documentation → review
+
+COMMANDS
+  /vibe <instruction>                    Delegate a coding task
+  /vibe <mode>: <instruction>            Delegate with inline mode
+  /vibe-mode <mode>                      Set persistent mode
+  /vibe-mode                             Show current mode + list all
+  /vibeon                                Enable auto-delegate
+  /vibeoff                               Disable auto-delegate
+  /vibestatus                            Show auto-mode + model status
+  /vibe-model-pick <alias>               Override model
+  /vibe-model-clear                      Clear model override
+  /vibe-report [--since N] [--fails]     Run history report
+  /vibe-reindex                          Update knowledge base
+  /vibe-audit [scan]                     Audit findings / trigger scan
+  /vibe-research [scan]                  Research findings / trigger scan
+  /vibe-scheduler start|stop|status      Manage continuous agents
+
+EXAMPLES
+  /vibe add a login page
+  /vibe steady: refactor the auth module
+  /vibe fix: the email validation is broken
+  /vibe docs: write API documentation
+  /vibe tournament: implement search
+  /vibe-mode ironclad
+  /vibe-scheduler start
+```
+
+---
+
 ## /vibeon | /vibeoff | /vibestatus
 
 Toggle auto-delegate mode — Vibe automatically handles all coding tasks without
