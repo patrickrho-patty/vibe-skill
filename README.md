@@ -6,6 +6,69 @@
 
 **Claude orchestrates. Cheap coding agents do the heavy lifting. You review the diff, save tokens, costs, and avoid hitting limits.**
 
+> **This is a fork.** The [original vibe-skill](https://github.com/pcx-wave/vibe-skill) delegates to Vibe only. This fork extends it into a **multi-harness delegation framework** with 16 new features. Everything below this box is new.
+
+---
+
+### What's New in This Fork
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Multi-Harness Support**
+Route tasks to **Vibe**, **Pi**, or **OpenCode** — not just Mistral. Each harness has its own adapter. Use `/delegate <harness> <instruction>` or let the router pick for you.
+
+**Reject-and-Correct Loop**
+The orchestrator **never writes code itself**. When a delegate makes a mistake, Claude sends a correction prompt *back* to the cheap model instead of fixing it with expensive tokens. Max 2 rounds, then escalate.
+
+**Rollback Checkpoints**
+Every delegation auto-creates a git branch checkpoint. If things go wrong, one command rolls back — including any commits the delegate created.
+
+**Delegation Contracts**
+Define pre/post conditions in `.delegate/contracts.yaml`. Pre-checks block bad delegations before they start. Post-checks auto-trigger corrections when results fail.
+
+**Parallel Delegation**
+Run independent tasks simultaneously, each in its own git worktree. File overlap is detected before dispatch — conflicting tasks run sequentially, everything else runs in parallel.
+
+**Multi-Step Chains**
+Define workflows like `planner -> implementor -> validator` in YAML. Each step can use a **different harness and model** — e.g., Pi (MiniMax) implements, Pi (GLM) reviews, Claude validates.
+
+</td>
+<td width="50%" valign="top">
+
+**Harness-Aware Routing**
+The system learns which harness performs best for which task type (refactor, bugfix, greenfield, etc.) from your run history and recommends the optimal one.
+
+**Context Distillation**
+Auto-generates a compressed project brief (stack, key files, data models, conventions) so Claude doesn't waste tokens re-reading the same codebase every delegation.
+
+**Failure Memory + Learning Loop**
+Records *why* delegations fail and *how* they were fixed. Before the next similar task, relevant warnings are injected into the prompt automatically.
+
+**AST Validation + Duplicate Detection**
+Goes beyond syntax checks — catches changed function signatures, functions defined but never called, duplicate definitions, merge conflict markers, and reverted imports.
+
+**Smart Batching**
+For bulk tasks like "add docstrings to all functions," auto-groups by file and runs batches within the harness turn limit.
+
+**Session Replay**
+Full session recording. When something goes wrong, step through the delegate's tool calls turn-by-turn to see exactly where it went off track.
+
+**Live Dashboard**
+TUI dashboard showing active runs, cost burn rate, success streaks, per-harness stats, and 7-day failure trends. Uses `rich` with plain-text fallback.
+
+**Codex Orchestrator**
+Codex CLI can be the manager too — same delegate scripts, different orchestrator. See `CODEX-SKILL.md`.
+
+</td>
+</tr>
+</table>
+
+> **Full usage guide:** [`docs/usage-guide.md`](docs/usage-guide.md) | **Feature roadmap:** [`docs/feature-roadmap.md`](docs/feature-roadmap.md)
+
+---
+
 Claude sees only ~500–1500 tokens per run regardless of how many file reads the delegate performs internally — massive savings on exploratory and implementation tasks.
 
 Supports **Vibe (Mistral), Pi (earendil-works), and OpenCode** as delegate harnesses. Vibe works natively with Mistral models (capable and significantly cheaper than Claude), but can also be configured to use any other provider/model such as DeepSeek.
