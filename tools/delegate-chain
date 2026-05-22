@@ -90,6 +90,12 @@ def parse_chain(path):
         if current_step is None:
             continue
 
+        # SOTA flag
+        m = re.match(r'^\s+sota:\s*(true|yes|1)', line, re.I)
+        if m and current_step is not None:
+            current_step['sota'] = True
+            continue
+
         # ── parallel: block handler (must come before generic step-field matchers) ──
 
         # Inside parallel: block — consume lines before they hit generic field parsers
@@ -219,8 +225,24 @@ def run_step(step, workdir, task, harness, step_index, total_steps, git_context=
     step_harness = step.get('harness', '')
     step_model = step.get('model', '')
 
-    # Substitute {task} placeholder
+    # Skip steps marked sota: true (orchestrator handles these before chain runs)
+    if step.get('sota'):
+        print(f'\n{"=" * 60}')
+        print(f'CHAIN STEP {step_index + 1}/{total_steps}: {role} [SOTA — handled by orchestrator]')
+        print(f'{"=" * 60}')
+        return 0
+
+    # Substitute {task} and {plan} placeholders
     prompt = template.replace('{task}', task)
+
+    # Inject plan from .delegate/plan.md if {plan} is in the template
+    if '{plan}' in prompt:
+        plan_path = os.path.join(workdir, '.delegate', 'plan.md')
+        if os.path.isfile(plan_path):
+            plan_content = open(plan_path).read()
+            prompt = prompt.replace('{plan}', plan_content)
+        else:
+            prompt = prompt.replace('{plan}', '(no plan found — implement based on the task description)')
 
     # Append git context from previous step if available
     if git_context:
@@ -270,6 +292,15 @@ def run_parallel_step(step, workdir, task, harness, step_index, total_steps, git
     role = step['role']
     template = step.get('prompt_template', '{task}')
     prompt = template.replace('{task}', task)
+
+    # Inject plan from .delegate/plan.md if {plan} is in the template
+    if '{plan}' in prompt:
+        plan_path = os.path.join(workdir, '.delegate', 'plan.md')
+        if os.path.isfile(plan_path):
+            prompt = prompt.replace('{plan}', open(plan_path).read())
+        else:
+            prompt = prompt.replace('{plan}', '(no plan found)')
+
     if git_context:
         prompt += f'\n\nContext from previous step:\n{git_context}'
 

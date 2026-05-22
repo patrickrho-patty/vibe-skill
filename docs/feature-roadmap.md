@@ -647,3 +647,34 @@ Step 6 will need a rewrite when F13 ships.
 Git stash is too fragile. Leaning toward throwaway branch or worktree
 isolation. Decision deferred until F1 reveals how different harnesses interact
 with git state.
+
+---
+
+## Future: Session Isolation (Multi-Terminal Support)
+
+**Status:** `planned` (not yet needed)
+
+When multiple terminals run delegations against the same project simultaneously,
+per-session state (plan.md, correction-prompt.txt, flag files) can conflict.
+
+**Approach:** Each `delegate` invocation gets a `DELEGATE_SESSION_ID` (env var,
+generated on first run in that terminal). Per-session state moves to
+`.delegate/sessions/<id>/`:
+
+```
+.delegate/
+  sessions/
+    a1b2c3d4/          ← terminal 1
+      plan.md
+      correction-prompt.txt
+      auto.flag / model.flag / mode.flag
+    e5f6g7h8/          ← terminal 2
+      ...
+  runs.jsonl           ← shared (file-locked)
+  knowledge.md         ← shared (read-only during runs)
+  audit-findings.jsonl ← shared (file-locked)
+  chains/              ← shared (read-only configs)
+```
+
+Shared read-only state stays at top level. Only mutable per-run state gets
+session-scoped. Build this when multi-terminal usage becomes common.

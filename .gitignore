@@ -20,3 +20,4 @@
 .delegate/scheduler.pid
 .delegate/scheduler-state.json
 .delegate/scheduler.log
+.delegate/plan.md

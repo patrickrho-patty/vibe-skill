@@ -111,6 +111,25 @@ the orchestrator first checks for an active mode:
 Available modes are auto-discovered from `.claude/vibe-skill/.delegate/chains/*.yaml`.
 The mode name is the filename without `.yaml`. Use `/vibe-mode` to list them.
 
+### SOTA planning (architect mode and any chain with `sota: true` steps)
+
+When a chain has a step with `sota: true`, that step is **skipped by the chain
+script** — the orchestrator (you, Claude/Codex) handles it directly:
+
+1. Read the step's `prompt_template`, substitute `{task}` with the user's instruction
+2. **Think about it yourself** — write a detailed implementation plan
+3. Write the plan to `.delegate/plan.md`:
+   ```bash
+   mkdir -p .delegate && cat > .delegate/plan.md << 'PLAN'
+   [your plan here]
+   PLAN
+   ```
+4. Then run the chain: `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" "<chain-yaml>"`
+5. The chain reads `.delegate/plan.md` and injects it as `{plan}` into subsequent steps
+
+The `architect` mode does exactly this: you plan, MiniMax implements your plan,
+GLM validates against your plan. Your architectural decisions drive everything.
+
 ---
 
 ## Known Limits

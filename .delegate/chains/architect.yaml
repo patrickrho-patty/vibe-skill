@@ -1,0 +1,19 @@
+name: architect
+description: SOTA plans, cheap models execute, SOTA validates at the end
+
+steps:
+  - role: planner
+    sota: true
+    prompt_template: "Write a detailed implementation plan for: {task}"
+
+  - role: implementor
+    harness: codex
+    model: minimax/MiniMax-M2.7
+    turns: 0
+    prompt_template: "Follow this plan EXACTLY. Do not deviate or add features not in the plan.\n\nPLAN:\n{plan}\n\nTASK: {task}"
+
+  - role: validator
+    harness: codex
+    model: glm/glm-5.1
+    turns: 0
+    prompt_template: "Review the changes against this plan. Verify every item was implemented correctly.\n\nPLAN:\n{plan}\n\nTASK: {task}\n\nReport any deviations or issues. Say LGTM if the plan was followed correctly."
