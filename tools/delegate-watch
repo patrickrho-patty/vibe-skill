@@ -162,11 +162,11 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
         'tool_calls': tool_calls,
         'warns': warns,
         'model': model,
-        'messages': messages[-3:],
+        'messages': messages[-8:],
         'files_touched': files_touched,
-        'reads': reads[-10:],
-        'edits': edits[-10:],
-        'activity': (reads + edits)[-15:],
+        'reads': reads[-5:],
+        'edits': edits[-5:],
+        'activity': (reads + edits)[-6:],
     }
 
 
