@@ -210,7 +210,7 @@ def rich_watch(workdir: str, session_file: str):
         except OSError:
             current_size = 0
 
-        state = parse_session(session_file)
+        state = parse_session(session_file, workdir)
         now = datetime.now().strftime('%H:%M:%S')
 
         header = f"[bold]Model:[/] {state['model']}  [bold]Events:[/] {state['events']}  [bold]Tools:[/] {state['tool_calls']}  [bold]Warns:[/] {state['warns']}"
