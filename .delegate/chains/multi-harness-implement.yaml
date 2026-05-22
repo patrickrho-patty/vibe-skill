@@ -3,13 +3,13 @@ description: Implement with MiniMax, review with GLM, orchestrator validates
 
 steps:
   - role: implementor
-    harness: pi
+    harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
     prompt_template: "Implement the following task. Write clean, working code.\n\nTASK: {task}\n\nVERIFY: grep for the main function/class you created and confirm it exists."
 
   - role: reviewer
-    harness: pi
-    model: zai/glm-5.1
+    harness: codex
+    model: glm/glm-5.1
     turns: 0
     prompt_template: "Review the recent git diff for correctness. Check for: missing imports, wrong variable names, logic errors, duplicate code, broken call sites.\n\nOriginal task: {task}\n\nIf you find issues, list them clearly. If clean, say LGTM."

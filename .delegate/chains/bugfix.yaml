@@ -1,21 +1,21 @@
 name: bugfix
-description: Investigate, fix, validate — all via Pi
+description: Investigate, fix, validate — all via Codex
 
 steps:
   - role: investigator
-    harness: pi
-    model: zai/glm-5.1
+    harness: codex
+    model: glm/glm-5.1
     turns: 0
     prompt_template: "Investigate the following bug. Read relevant files, identify the root cause, and explain what needs to change.\n\nBUG: {task}"
 
   - role: fixer
-    harness: pi
+    harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
     prompt_template: "Fix the following bug based on the investigation above.\n\nBUG: {task}\n\nApply the minimal fix. Do not refactor unrelated code."
 
   - role: validator
-    harness: pi
-    model: zai/glm-5.1
+    harness: codex
+    model: glm/glm-5.1
     turns: 0
     prompt_template: "Review the fix for: {task}. Verify the root cause was addressed, no regressions were introduced, and imports are correct. Report issues or say LGTM."
