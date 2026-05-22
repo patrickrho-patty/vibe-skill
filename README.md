@@ -59,7 +59,7 @@ Full session recording. When something goes wrong, step through the delegate's t
 TUI dashboard showing active runs, cost burn rate, success streaks, per-harness stats, and 7-day failure trends. Uses `rich` with plain-text fallback.
 
 **Codex Orchestrator**
-Codex CLI can be the manager too — same delegate scripts, different orchestrator. See `CODEX-SKILL.md`.
+Codex CLI can be the manager too — same delegate scripts, different orchestrator. Install to `.codex/AGENTS.md` in your project.
 
 </td>
 </tr>
@@ -509,6 +509,13 @@ Max 2 correction rounds before escalating. All code generation stays on cheap de
 ### Codex orchestrator
 
 `CODEX-SKILL.md` ports the orchestration logic so Codex CLI can act as the manager — decomposing tasks, delegating to Vibe/Pi/OpenCode, and reviewing diffs — with the same economic model as Claude Code.
+
+Install into your project (does NOT overwrite existing `AGENTS.md`):
+```bash
+mkdir -p <project>/.codex
+cp CODEX-SKILL.md <project>/.codex/AGENTS.md
+```
+Codex walks from repo root to CWD and concatenates all `AGENTS.md` files it finds — `.codex/AGENTS.md` is appended, never replaces the root one.
 
 ---
 

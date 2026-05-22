@@ -893,7 +893,18 @@ Codex can act as the orchestrator instead of Claude Code — it delegates to the
 
 The delegation scripts are orchestrator-agnostic. The `delegate-runs.jsonl` log is shared, so `/vibe-report` and `delegate-dashboard` show runs from both Claude Code and Codex sessions.
 
-See `CODEX-SKILL.md` for setup and the Codex-specific invocation format.
+### Installation
+
+Install into your project's `.codex/` directory — does NOT overwrite any existing `AGENTS.md`:
+
+```bash
+mkdir -p <project>/.codex
+cp ~/projects/vibe-skill/CODEX-SKILL.md <project>/.codex/AGENTS.md
+```
+
+Codex walks from repo root to CWD and concatenates all `AGENTS.md` files, so `.codex/AGENTS.md` is appended to the root one.
+
+See `CODEX-SKILL.md` for the full Codex-specific invocation format.
 
 ---
 
