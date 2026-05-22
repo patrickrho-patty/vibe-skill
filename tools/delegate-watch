@@ -33,11 +33,18 @@ def find_latest_session(workdir: str) -> str:
     return str(files[0]) if files else ''
 
 
-def parse_session(session_file: str) -> dict:
+def read_model_flag(workdir: str) -> str:
+    flag = Path(workdir) / '.delegate' / 'model.flag'
+    if flag.exists():
+        return flag.read_text().strip()
+    return ''
+
+
+def parse_session(session_file: str, workdir: str = '') -> dict:
     events = []
     tool_calls = 0
     warns = 0
-    model = 'unknown'
+    model = read_model_flag(workdir) if workdir else 'unknown'
     last_text = ''
     files_touched = set()
     reads = []
@@ -66,14 +73,25 @@ def parse_session(session_file: str) -> dict:
                     if m:
                         model = m
 
-                if item_type in ('tool_call', 'function_call', 'computer_call'):
+                if item_type in ('tool_call', 'function_call', 'computer_call', 'command_execution'):
                     tool_calls += 1
                     name = item.get('name', '')
                     args = item.get('arguments', '') or item.get('input', '') or ''
+                    cmd = item.get('command', '')
                     if isinstance(args, dict):
                         args = json.dumps(args)
 
-                    if 'write' in name.lower() or 'edit' in name.lower():
+                    if cmd:
+                        # Codex command_execution format
+                        short_cmd = cmd.split("'")[-2] if "'" in cmd else cmd
+                        if 'cat ' in cmd or 'head ' in cmd:
+                            target = short_cmd.split()[-1] if short_cmd.split() else cmd[:60]
+                            reads.append(f"[read] {os.path.basename(target)}")
+                        elif any(w in cmd for w in ['write', 'tee', '>']):
+                            edits.append(f"[write] {short_cmd[:60]}")
+                        else:
+                            edits.append(f"[cmd]  {short_cmd[:60]}")
+                    elif 'write' in name.lower() or 'edit' in name.lower():
                         try:
                             a = json.loads(args) if isinstance(args, str) else args
                             fp = a.get('path', '') or a.get('file_path', '')
@@ -93,6 +111,14 @@ def parse_session(session_file: str) -> dict:
                     output = str(item.get('output', ''))
                     if 'error' in output.lower() or 'failed' in output.lower():
                         warns += 1
+
+                # Track files from command_execution (cat/write targets)
+                if item_type == 'command_execution' and item.get('command', ''):
+                    cmd_str = item['command']
+                    # Extract file paths from common commands
+                    for part in cmd_str.split():
+                        if '/' in part and not part.startswith('-'):
+                            files_touched.add(os.path.basename(part))
 
                 elif item_type in ('message', 'text', 'agent_message'):
                     content = item.get('content', '') or item.get('text', '') or ''
@@ -135,7 +161,7 @@ def plain_watch(workdir: str, session_file: str):
 
         if current_size != last_size:
             last_size = current_size
-            state = parse_session(session_file)
+            state = parse_session(session_file, workdir)
             os.system('clear')
             print(f"=== DELEGATION LIVE ({datetime.now().strftime('%H:%M:%S')}) ===")
             print(f"Session: {os.path.basename(session_file)}")
