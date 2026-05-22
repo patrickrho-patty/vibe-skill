@@ -5,17 +5,17 @@ steps:
   - role: planner
     harness: pi
     model: zai/glm-5.1
-    turns: 5
+    turns: 0
     prompt_template: "Analyze the codebase and create an implementation plan for: {task}\n\nList files to modify, approach, and risks. Do NOT write code."
 
   - role: implementor
     harness: pi
     model: minimax/MiniMax-M2.7
-    turns: 12
+    turns: 0
     prompt_template: "Based on the plan, implement: {task}\n\nFollow existing conventions. Add all necessary imports."
 
   - role: validator
     harness: pi
     model: zai/glm-5.1
-    turns: 3
+    turns: 0
     prompt_template: "Review the changes made for: {task}. Check for bugs, missing imports, duplicate code. Report issues or say LGTM."

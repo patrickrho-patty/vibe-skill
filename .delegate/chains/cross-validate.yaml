@@ -5,11 +5,11 @@ steps:
   - role: implementor-a
     harness: pi
     model: minimax/MiniMax-M2.7
-    turns: 10
+    turns: 0
     prompt_template: "Implement: {task}\n\nWrite minimal, correct code. Do not over-engineer."
 
   - role: implementor-b
     harness: pi
     model: zai/glm-5.1
-    turns: 10
+    turns: 0
     prompt_template: "Implement: {task}\n\nWrite minimal, correct code. Do not over-engineer."

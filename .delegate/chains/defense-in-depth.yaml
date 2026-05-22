@@ -1,27 +1,27 @@
 name: defense-in-depth
-description: Plan → implement → test → security review, alternating MiniMax and GLM
+description: Plan, implement, test, security review — alternating MiniMax and GLM
 
 steps:
   - role: planner
     harness: pi
     model: zai/glm-5.1
-    turns: 5
+    turns: 0
     prompt_template: "Analyze the codebase and plan how to: {task}\n\nList the files to modify, the approach, and any risks. Do NOT write code yet."
 
   - role: implementor
     harness: pi
     model: minimax/MiniMax-M2.7
-    turns: 12
+    turns: 0
     prompt_template: "Implement the following based on the plan above.\n\nTASK: {task}\n\nWrite the code. Follow existing conventions. Add imports."
 
   - role: test-writer
     harness: pi
     model: zai/glm-5.1
-    turns: 8
+    turns: 0
     prompt_template: "Write tests for the changes just made for: {task}\n\nUse the project's existing test framework. Cover the happy path and one edge case."
 
   - role: security-reviewer
     harness: pi
     model: minimax/MiniMax-M2.7
-    turns: 3
+    turns: 0
     prompt_template: "Security review the recent changes for: {task}\n\nCheck for: injection, auth bypass, data leaks, unsafe deserialization, path traversal. Report issues or say CLEAR."
