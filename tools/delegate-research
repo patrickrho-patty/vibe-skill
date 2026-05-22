@@ -388,7 +388,10 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
         print(f"  Could not read {filepath}: {e}", file=sys.stderr)
         return []
 
-    rel_path = str(fpath.relative_to(Path(workdir))) if fpath.is_absolute() else filepath
+    try:
+        rel_path = str(fpath.relative_to(Path(workdir)))
+    except ValueError:
+        rel_path = filepath
 
     print(f"  Identifying topics for: {rel_path}")
 
@@ -467,9 +470,11 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
     gate_raw = run_codex(workdir, gate_prompt, qmodel)
     gated_findings = extract_json_array(gate_raw)
 
-    # If quality gate fails to parse, fall back to raw findings
+    # If quality gate fails to parse, fall back to raw findings (mark all as keep)
     if not gated_findings:
-        print(f"  Quality gate returned nothing — using raw findings")
+        print(f"  Quality gate returned nothing — accepting raw findings")
+        for rf in raw_findings:
+            rf['gate'] = 'keep'
         gated_findings = raw_findings
 
     # Only keep findings that passed the gate
@@ -568,15 +573,16 @@ def cmd_scan(workdir: str, file_arg: str = '', model: str = ''):
         files = [os.path.abspath(file_arg)]
     else:
         all_files = discover_files(workdir, cap=50)
-        # Filter to files changed since last scan
+        # Filter to files changed since last scan (use relative paths for portability)
         files = []
         for fpath in all_files:
             try:
                 mtime = os.path.getmtime(fpath)
-                last_scanned = scan_state.get(fpath, 0)
+                rel = os.path.relpath(fpath, workdir)
+                last_scanned = scan_state.get(rel, 0)
                 if mtime > last_scanned:
                     files.append(fpath)
-            except OSError:
+            except (OSError, ValueError):
                 continue
 
         if not files and all_files:
@@ -599,8 +605,12 @@ def cmd_scan(workdir: str, file_arg: str = '', model: str = ''):
             append_findings(workdir, new_findings)
             existing_findings.extend(new_findings)
             total_new += len(new_findings)
-        # Update scan timestamp for this file
-        scan_state[filepath] = time.time()
+        # Update scan timestamp using relative path for portability
+        try:
+            rel = os.path.relpath(filepath, workdir)
+        except ValueError:
+            rel = filepath
+        scan_state[rel] = time.time()
 
     save_scan_state(workdir, scan_state)
     print(f"\n[delegate-research] Done. {total_new} new finding(s) appended to .delegate/research.jsonl")
