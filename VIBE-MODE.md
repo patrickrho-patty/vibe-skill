@@ -11,41 +11,47 @@ allowed-tools:
 
 Set the active delegation chain for all subsequent `/vibe` or `/delegate` tasks.
 
-## Available modes
-
-| Mode | Chain | What it does |
-|------|-------|-------------|
-| `simple` | (none) | Single delegation, no chain (default) |
-| `implement` | implement.yaml | GLM plans → MiniMax implements → GLM validates |
-| `bugfix` | bugfix.yaml | GLM investigates → MiniMax fixes → GLM validates |
-| `multi-harness` | multi-harness-implement.yaml | MiniMax implements → GLM reviews |
-| `cross-validate` | cross-validate.yaml | MiniMax and GLM both implement, pick the best |
-| `defense` | defense-in-depth.yaml | GLM plans → MiniMax implements → GLM tests → MiniMax security reviews |
-
 ## Behavior
 
 When the user says `/vibe-mode <mode>`:
 
-1. If mode is `simple` or `clear`:
+1. **Discover available modes** by listing chain files:
+   ```bash
+   ls .claude/vibe-skill/.delegate/chains/*.yaml 2>/dev/null | sed 's|.*/||;s|\.yaml$||'
+   ```
+   Each `.yaml` file in `.delegate/chains/` is a mode. The mode name is the
+   filename without the extension (e.g., `implement.yaml` → mode `implement`,
+   `multi-harness-implement.yaml` → mode `multi-harness-implement`).
+
+2. If mode is `simple` or `clear`:
    - Run: `rm -f ~/.local/share/vibe-mode.flag`
    - Confirm: "Mode: simple (direct delegation, no chain)"
 
-2. For any other mode, validate it exists in the table above, then:
+3. If mode matches a chain file:
    - Run: `echo <mode> > ~/.local/share/vibe-mode.flag`
-   - Confirm: "Mode set to <mode> — all delegations will use the <chain> chain."
+   - To show what the chain does, read the `description:` line from the YAML:
+     ```bash
+     grep '^description:' .claude/vibe-skill/.delegate/chains/<mode>.yaml
+     ```
+   - Confirm: "Mode set to <mode> — <description>"
 
-3. If no mode is provided, show current mode and list available modes:
-   - Run: `cat ~/.local/share/vibe-mode.flag 2>/dev/null || echo "simple"`
-   - Print the table above
+4. If mode does NOT match any chain file:
+   - Print: "No mode called '<mode>'. Available modes:"
+   - List all available modes (from step 1) plus `simple`
+   - Do NOT set the flag
+
+5. If no mode is provided, show current mode and list all available:
+   - Current: `cat ~/.local/share/vibe-mode.flag 2>/dev/null || echo "simple"`
+   - List all chain files as above
 
 ## How it integrates
 
 When `/vibe <task>` is invoked and `~/.local/share/vibe-mode.flag` exists:
 
-- Read the mode from the flag file
-- Instead of calling `delegate` directly, call `delegate-chain` with the
-  corresponding chain YAML file
-- Pass the user's task as `DELEGATE_CHAIN_TASK`
+- Read the mode name from the flag file
+- Look for `.claude/vibe-skill/.delegate/chains/<mode>.yaml`
+- If found: run `delegate-chain` with that YAML, passing `DELEGATE_CHAIN_TASK`
+- If not found (chain was deleted): warn and fall back to simple mode
 
 When the flag is absent or set to `simple`, delegation works as before (single
 call to `delegate`).
