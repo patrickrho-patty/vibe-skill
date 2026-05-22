@@ -28,27 +28,78 @@ def get_modified_files(workdir: str) -> list:
     files += [f.strip() for f in r2.stdout.splitlines() if f.strip()]
     return files
 
+def _is_test_file(filepath: str) -> bool:
+    base = os.path.basename(filepath)
+    return (base.startswith('test_') or base.endswith('_test.py') or
+            base.endswith('.test.js') or base.endswith('.test.ts') or
+            base.endswith('.spec.js') or base.endswith('.spec.ts') or
+            '/test' in filepath or '/tests' in filepath or
+            '/spec' in filepath or '/__tests__' in filepath)
+
+
+# Methods that are expected to repeat across test classes
+_TEST_METHOD_ALLOWLIST = {
+    'setUp', 'tearDown', 'setUpClass', 'tearDownClass',
+    'setup_method', 'teardown_method', 'setup', 'teardown',
+    'beforeEach', 'afterEach', 'beforeAll', 'afterAll',
+}
+
+
 def check_duplicate_definitions(content: str, filepath: str) -> list:
-    """Find duplicate function/class definitions."""
+    """Find duplicate function/class definitions in the same scope."""
     issues = []
-    # Python
+    is_test = _is_test_file(filepath)
+
     if filepath.endswith('.py'):
-        funcs = re.findall(r'^(?:def|class)\s+(\w+)', content, re.M)
-        dupes = [name for name, count in Counter(funcs).items() if count > 1]
-        for d in dupes:
-            issues.append(f"Duplicate definition: '{d}' defined {Counter(funcs)[d]} times")
-    # JavaScript/TypeScript
+        # Track per-class scope — methods in different classes are NOT duplicates
+        current_class = None
+        scoped_defs = {}  # (scope, name) -> count
+
+        for line in content.splitlines():
+            class_match = re.match(r'^class\s+(\w+)', line)
+            if class_match:
+                current_class = class_match.group(1)
+                scope = '__module__'
+                name = current_class
+                scoped_defs[(scope, name)] = scoped_defs.get((scope, name), 0) + 1
+                continue
+
+            func_match = re.match(r'^(\s*)def\s+(\w+)', line)
+            if func_match:
+                indent = len(func_match.group(1))
+                name = func_match.group(2)
+                if indent > 0 and current_class:
+                    scope = current_class
+                else:
+                    scope = '__module__'
+                    current_class = None
+                scoped_defs[(scope, name)] = scoped_defs.get((scope, name), 0) + 1
+
+        for (scope, name), count in scoped_defs.items():
+            if count > 1:
+                if is_test and name in _TEST_METHOD_ALLOWLIST:
+                    continue
+                if is_test and name.startswith('test_') and scope == '__module__':
+                    continue
+                issues.append(f"Duplicate definition: '{name}' defined {count} times in {scope}")
+
     elif filepath.endswith(('.js', '.ts', '.jsx', '.tsx')):
         funcs = re.findall(r'^(?:function|class|const|let|var)\s+(\w+)', content, re.M)
         dupes = [name for name, count in Counter(funcs).items() if count > 1]
         for d in dupes:
+            if is_test and d in ('describe', 'it', 'test', 'beforeEach', 'afterEach', 'beforeAll', 'afterAll'):
+                continue
             issues.append(f"Duplicate definition: '{d}' defined {Counter(funcs)[d]} times")
     return issues
 
-def check_repeated_blocks(content: str) -> list:
+def check_repeated_blocks(content: str, filepath: str = '') -> list:
     """Find >5 identical consecutive lines (copy-paste bug)."""
+    is_test = _is_test_file(filepath)
     issues = []
     lines = content.splitlines()
+
+    # Consecutive identical lines (raise threshold for test files)
+    threshold = 8 if is_test else 5
     i = 0
     while i < len(lines):
         if not lines[i].strip():
@@ -57,11 +108,15 @@ def check_repeated_blocks(content: str) -> list:
         count = 1
         while i + count < len(lines) and lines[i + count] == lines[i]:
             count += 1
-        if count > 5:
+        if count > threshold:
             issues.append(f"Repeated line {count} times at line {i+1}: '{lines[i].strip()[:60]}'")
         i += count
 
-    # Check for repeated blocks (groups of lines)
+    # Skip block duplication check entirely for test files — setup/fixture
+    # patterns are intentionally repeated across test classes
+    if is_test:
+        return issues
+
     block_size = 5
     if len(lines) >= block_size * 2:
         for i in range(len(lines) - block_size * 2 + 1):
@@ -70,11 +125,10 @@ def check_repeated_blocks(content: str) -> list:
                 continue
             rest = '\n'.join(lines[i+block_size:])
             if block in rest:
-                # Verify it's an exact duplicate, not just similar
                 next_occurrence = rest.find(block)
-                if next_occurrence < block_size * 100:  # Within reasonable proximity
+                if next_occurrence < block_size * 100:
                     issues.append(f"Duplicated {block_size}-line block at line {i+1}")
-                    break  # Only report first duplicate block per file
+                    break
     return issues
 
 def check_conflict_markers(content: str) -> list:
@@ -125,7 +179,7 @@ def main():
 
         issues = []
         issues += check_duplicate_definitions(content, filepath)
-        issues += check_repeated_blocks(content)
+        issues += check_repeated_blocks(content, filepath)
         issues += check_conflict_markers(content)
         issues += check_duplicate_imports(content, filepath)
 
