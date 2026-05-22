@@ -17,6 +17,17 @@
 #           cost_usd, model, warn_count, search_replace_fails, cost_claude_eq,
 #           wrote_nothing.
 
+# macOS doesn't ship with `timeout` — use gtimeout (brew install coreutils) or shim it
+if ! command -v timeout &>/dev/null; then
+  if command -v gtimeout &>/dev/null; then
+    timeout() { gtimeout "$@"; }
+    export -f timeout
+  else
+    timeout() { shift; "$@"; }
+    export -f timeout
+  fi
+fi
+
 HARNESS="${1:?Usage: delegate <harness> <workdir> <prompt> [max-turns] [agent] [timeout-secs]}"
 WORKDIR="${2:?Workdir required}"
 PROMPT="${3:?Prompt required}"

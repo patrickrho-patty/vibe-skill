@@ -3,13 +3,12 @@
 delegate-chain — run multi-step delegation workflows where each step's output feeds the next.
 
 Usage:
-  delegate-chain <workdir> <chain-file> [harness] [task]
+  delegate-chain <workdir> <chain-file> <task>
 
 Arguments:
   workdir     Path to the working directory for delegation.
   chain-file  Path to a YAML chain file (see .delegate/chains/).
-  harness     Harness script to use (default: tools/vibe-delegate).
-  task        Task description. Falls back to DELEGATE_CHAIN_TASK env var.
+  task        Task description. Also accepts DELEGATE_CHAIN_TASK env var.
 
 Chain file format (YAML subset):
   name: <chain-name>
@@ -590,14 +589,17 @@ def main():
 
     workdir = sys.argv[1]
     chain_file = sys.argv[2]
-    harness = sys.argv[3] if len(sys.argv) > 3 else None
-    task = sys.argv[4] if len(sys.argv) > 4 else None
 
-    # Resolve task from env var if not provided as argument
+    # Simple 3-arg interface: delegate-chain <workdir> <chain-file> <task>
+    # Harness is ALWAYS auto-resolved from the script's own directory.
+    task = sys.argv[3] if len(sys.argv) > 3 else None
+
+    # Resolve task from env var if not provided
     if not task:
         task = os.environ.get('DELEGATE_CHAIN_TASK', '')
     if not task:
-        print('ERROR: No task provided. Pass as 4th argument or set DELEGATE_CHAIN_TASK.', file=sys.stderr)
+        print('ERROR: No task provided. Pass as 3rd argument or set DELEGATE_CHAIN_TASK.', file=sys.stderr)
+        print('Usage: delegate-chain <workdir> <chain-file> <task>', file=sys.stderr)
         sys.exit(1)
 
     # Resolve workdir
@@ -610,12 +612,11 @@ def main():
         print(f'ERROR: chain file not found: {chain_file}', file=sys.stderr)
         sys.exit(1)
 
-    # Resolve harness — default to tools/delegate relative to this script
-    if not harness:
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        harness = os.path.join(script_dir, 'delegate')
+    # Auto-resolve harness — always tools/delegate relative to this script
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    harness = os.path.join(script_dir, 'delegate')
     if not os.path.isfile(harness):
-        print(f'ERROR: harness not found: {harness}', file=sys.stderr)
+        print(f'ERROR: delegate script not found at: {harness}', file=sys.stderr)
         sys.exit(1)
 
     # Parse chain
