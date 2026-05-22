@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""
+delegate-failures — failure memory for delegation
+Records failures and queries relevant ones to improve future prompts.
+
+Usage:
+  delegate-failures record <workdir> <harness> <error_type> <symptom> <fix_applied> [file]
+  delegate-failures query <workdir> [file1] [file2] ...
+  delegate-failures prune
+"""
+import sys, os, json
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
+LOG = Path.home() / '.local' / 'share' / 'delegate-failures.jsonl'
+
+def ensure_log():
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    if not LOG.exists():
+        LOG.touch()
+
+def record(workdir: str, harness: str, error_type: str, symptom: str, fix_applied: str, file: str = ''):
+    """Record a failure."""
+    ensure_log()
+    entry = {
+        'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'workdir': workdir,
+        'project': os.path.basename(workdir),
+        'harness': harness,
+        'error_type': error_type,
+        'symptom': symptom,
+        'fix_applied': fix_applied,
+        'file': file,
+    }
+    with open(LOG, 'a') as f:
+        f.write(json.dumps(entry) + '\n')
+    print(f"[failure-memory] Recorded: {error_type} in {file or 'unknown'} ({harness})")
+
+def query(workdir: str, files: list[str]) -> list[dict]:
+    """Query relevant failures for the given workdir/files."""
+    ensure_log()
+    project = os.path.basename(workdir)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    relevant = []
+
+    try:
+        entries = [json.loads(line) for line in LOG.read_text().splitlines() if line.strip()]
+    except Exception:
+        entries = []
+
+    for entry in entries:
+        # Parse timestamp
+        try:
+            ts = datetime.fromisoformat(entry['ts'].replace('Z', '+00:00'))
+            if ts < cutoff:
+                continue
+        except (KeyError, ValueError):
+            continue
+
+        # Match by project or file
+        is_relevant = False
+        if entry.get('project') == project:
+            is_relevant = True
+        if entry.get('file') and files:
+            for f in files:
+                if entry['file'] in f or f in entry.get('file', ''):
+                    is_relevant = True
+                    break
+        # Also match by harness pattern (harness-wide issues)
+        if not entry.get('file'):
+            is_relevant = True  # Harness-wide issues always relevant
+
+        if is_relevant:
+            relevant.append(entry)
+
+    # Deduplicate by error_type + file
+    seen = set()
+    unique = []
+    for r in relevant:
+        key = (r.get('error_type', ''), r.get('file', ''))
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+
+    # Print as warnings
+    if unique:
+        print(f"[failure-memory] {len(unique)} relevant warning(s) for this delegation:")
+        for r in unique[:10]:  # Max 10 warnings
+            file_str = f" in {r['file']}" if r.get('file') else ''
+            print(f"  ⚠ {r['error_type']}{file_str}: {r['symptom']}")
+            if r.get('fix_applied'):
+                print(f"    Fix: {r['fix_applied']}")
+    else:
+        print("[failure-memory] No relevant failures found")
+
+    return unique
+
+def prune():
+    """Remove entries older than 30 days."""
+    ensure_log()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    kept = []
+    removed = 0
+
+    try:
+        entries = LOG.read_text().splitlines()
+    except Exception:
+        entries = []
+
+    for line in entries:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            ts = datetime.fromisoformat(entry['ts'].replace('Z', '+00:00'))
+            if ts >= cutoff:
+                kept.append(line)
+            else:
+                removed += 1
+        except (json.JSONDecodeError, KeyError, ValueError):
+            kept.append(line)  # Keep unparseable entries
+
+    LOG.write_text('\n'.join(kept) + '\n' if kept else '')
+    print(f"[failure-memory] Pruned {removed} entries older than 30 days, {len(kept)} remaining")
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+    action = sys.argv[1]
+
+    if action == 'record':
+        if len(sys.argv) < 7:
+            print("Usage: delegate-failures record <workdir> <harness> <error_type> <symptom> <fix_applied> [file]", file=sys.stderr)
+            sys.exit(1)
+        workdir = sys.argv[2]
+        harness = sys.argv[3]
+        error_type = sys.argv[4]
+        symptom = sys.argv[5]
+        fix_applied = sys.argv[6]
+        file = sys.argv[7] if len(sys.argv) > 7 else ''
+        record(workdir, harness, error_type, symptom, fix_applied, file)
+
+    elif action == 'query':
+        if len(sys.argv) < 3:
+            print("Usage: delegate-failures query <workdir> [file1] [file2] ...", file=sys.stderr)
+            sys.exit(1)
+        workdir = sys.argv[2]
+        files = sys.argv[3:] if len(sys.argv) > 3 else []
+        query(workdir, files)
+
+    elif action == 'prune':
+        prune()
+
+    else:
+        print(f"Unknown action: {action}", file=sys.stderr)
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

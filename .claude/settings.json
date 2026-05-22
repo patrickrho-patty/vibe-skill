@@ -8,6 +8,7 @@
       "Bash(systemctl status *)",
       "Bash(systemctl --user list-units *)",
       "Bash(~/tools/delegate-report *)"
-    ]
+    ],
+    "defaultMode": "bypassPermissions"
   }
 }

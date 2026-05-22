@@ -1,0 +1,19 @@
+# bugfix.yaml — Investigate, fix, validate
+name: bugfix
+description: Investigate, fix, validate
+
+steps:
+  - role: investigator
+    agent: code-architect
+    turns: 5
+    prompt_template: "Investigate the bug and identify the root cause for: {task}"
+
+  - role: fixer
+    agent: default
+    turns: 10
+    prompt_template: "Fix the bug identified in the investigation for: {task}"
+
+  - role: validator
+    agent: code-reviewer
+    turns: 3
+    prompt_template: "Review the bug fix for: {task}. Verify the fix is correct and does not introduce regressions."

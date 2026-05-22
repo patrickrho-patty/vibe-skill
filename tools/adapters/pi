@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# adapters/pi — Pi coding agent adapter for tools/delegate
+# Usage: adapters/pi <workdir> <prompt_file> <max_turns> <agent> <timeout_secs> <stats_file>
+#
+# Pi CLI interface (earendil-works/pi):
+#   pi -p "prompt"              — print mode: run prompt, print response, exit
+#   pi --mode json "prompt"     — JSON lines event stream to stdout
+#   No TTY required (unlike Vibe)
+#   No --trust flag; permissions are handled via extensions/config
+
+WORKDIR="${1:?Usage: adapters/pi <workdir> <prompt_file> <max_turns> <agent> <timeout_secs> <stats_file>}"
+PROMPT_FILE="${2:?Prompt file required}"
+MAX_TURNS="${3:-10}"
+AGENT="${4:-}"
+TIMEOUT_SECS="${5:-180}"
+STATS_FILE="${6:?Stats file required}"
+
+if ! command -v pi &>/dev/null; then
+  echo "[pi] ERROR: 'pi' CLI not found. Install: npm i -g @earendil-works/pi-coding-agent" >&2
+  python3 -c "
+import json, os
+sf = os.environ.get('DELEGATE_STATS_FILE', '')
+if sf:
+    with open(sf, 'w') as f:
+        json.dump({'tool_calls': 0, 'warn_count': 0, 'tokens_total': 0, 'cost_usd': 0, 'model': 'pi-unknown'}, f)
+"
+  exit 1
+fi
+
+PROMPT_CONTENT=$(cat "$PROMPT_FILE")
+
+export DELEGATE_STATS_FILE="$STATS_FILE"
+
+cd "$WORKDIR"
+
+timeout "$TIMEOUT_SECS" pi --mode json -p "$PROMPT_CONTENT" 2>/dev/null | python3 -c "
+import sys, json, re, os, datetime
+
+tools_called = 0
+warn_count = 0
+sr_fails = 0
+model_name = 'pi-unknown'
+
+# Session recording
+session_dir = os.path.expanduser('~/.local/share/delegate-sessions')
+os.makedirs(session_dir, exist_ok=True)
+session_file = os.path.join(
+    session_dir,
+    datetime.datetime.utcnow().strftime('%Y-%m-%dT%H-%M-%SZ') + '-pi.jsonl'
+)
+sf = open(session_file, 'w')
+
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    sf.write(json.dumps(msg) + '\n')
+
+    event_type = msg.get('type', '') or msg.get('event', '') or ''
+    content = msg.get('content', '') or msg.get('text', '') or msg.get('data', '') or ''
+    if isinstance(content, dict):
+        content = json.dumps(content)
+
+    # Extract model name if available
+    if msg.get('model'):
+        model_name = msg['model']
+
+    # Detect tool calls
+    if event_type in ('tool_call', 'tool_use', 'tool', 'function_call'):
+        tools_called += 1
+        tool_name = msg.get('name', '') or msg.get('tool', '') or ''
+        if 'write' in tool_name.lower() or 'edit' in tool_name.lower():
+            filepath = msg.get('path', '') or msg.get('file_path', '') or ''
+            print(f'  [tool]  file: {filepath or str(content)[:80]}', flush=True)
+        elif 'search_replace' in tool_name.lower():
+            status = 'FAIL' if 'failed' in str(content).lower() else 'OK'
+            if status == 'FAIL':
+                sr_fails += 1
+            print(f'  [tool]  search_replace [{status}]', flush=True)
+        elif 'read' in tool_name.lower():
+            print(f'  [read]  {str(content)[:80]}', flush=True)
+        else:
+            print(f'  [tool]  {tool_name}: {str(content)[:80]}', flush=True)
+
+    elif event_type in ('tool_result', 'tool_output'):
+        first_line = str(content).split('\n')[0][:120]
+        if 'error' in first_line.lower() or 'failed' in first_line.lower():
+            warn_count += 1
+            print(f'  [WARN]  {first_line}', flush=True)
+
+    elif event_type in ('assistant', 'text', 'message', 'response'):
+        text = str(content).strip()
+        if text:
+            print(f'  [pi] {text[:400]}', flush=True)
+
+    elif event_type in ('usage', 'stats', 'done', 'complete'):
+        # Try to extract token counts
+        usage = msg.get('usage', {}) or msg
+        if isinstance(usage, dict):
+            tokens_in = usage.get('input_tokens', 0) or usage.get('prompt_tokens', 0)
+            tokens_out = usage.get('output_tokens', 0) or usage.get('completion_tokens', 0)
+            if tokens_in or tokens_out:
+                model_name = usage.get('model', model_name)
+
+sf.close()
+print(f'Tool calls: {tools_called}  |  warns: {warn_count}  |  sr_fails: {sr_fails}')
+print(f'Session recorded: {session_file}')
+
+_sf = os.environ.get('DELEGATE_STATS_FILE', '')
+if _sf:
+    try:
+        # Estimate cost (pi model pricing varies; use conservative estimate)
+        stats = {
+            'tool_calls': tools_called,
+            'warn_count': warn_count,
+            'search_replace_fails': sr_fails,
+            'model': model_name,
+            'session_file': session_file,
+        }
+        with open(_sf, 'w') as _f:
+            json.dump(stats, _f)
+    except Exception:
+        pass
+"
+PI_EXIT=${PIPESTATUS[0]}
+
+exit $PI_EXIT

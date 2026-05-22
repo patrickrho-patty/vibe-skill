@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# delegate-rollback — Rollback checkpoint management via throwaway git branches
+#
+# Usage:
+#   delegate-rollback create  <workdir>                    → prints checkpoint branch name
+#   delegate-rollback rollback <workdir> <checkpoint>      → restores working tree, deletes checkpoint
+#   delegate-rollback accept  <workdir> <checkpoint>       → keeps changes, deletes checkpoint
+#   delegate-rollback cleanup <workdir>                    → deletes stale checkpoints (>1 hour old)
+
+set -euo pipefail
+
+ACTION="${1:?Usage: delegate-rollback <create|rollback|accept|cleanup> <workdir> [checkpoint]}"
+WORKDIR="${2:?Workdir required}"
+
+if [ ! -d "$WORKDIR" ]; then
+  echo "ERROR: workdir '$WORKDIR' does not exist" >&2
+  exit 1
+fi
+
+cd "$WORKDIR"
+
+case "$ACTION" in
+
+  create)
+    CHECKPOINT="delegate-checkpoint-$(date +%s)"
+    git branch "$CHECKPOINT" 2>/dev/null
+    echo "$CHECKPOINT"
+    ;;
+
+  rollback)
+    CHECKPOINT="${3:?Checkpoint branch name required}"
+    # Reset HEAD to the checkpoint SHA (undoes any commits made during delegation)
+    CHECKPOINT_SHA=$(git rev-parse "$CHECKPOINT" 2>/dev/null)
+    if [ -n "$CHECKPOINT_SHA" ]; then
+      git reset --hard "$CHECKPOINT_SHA"
+    else
+      git checkout -- .
+      git clean -fd
+    fi
+    git branch -D "$CHECKPOINT" 2>/dev/null || true
+    echo "[rollback] Restored to checkpoint $CHECKPOINT_SHA and deleted branch: $CHECKPOINT"
+    ;;
+
+  accept)
+    CHECKPOINT="${3:?Checkpoint branch name required}"
+    git branch -D "$CHECKPOINT" 2>/dev/null || true
+    echo "[accept] Changes kept, checkpoint deleted: $CHECKPOINT"
+    ;;
+
+  cleanup)
+    NOW=$(date +%s)
+    CUTOFF=$((NOW - 3600))
+    DELETED=0
+    while IFS= read -r branch; do
+      [ -z "$branch" ] && continue
+      TS="${branch#delegate-checkpoint-}"
+      if [ "$TS" -lt "$CUTOFF" ] 2>/dev/null; then
+        git branch -D "$branch" 2>/dev/null && DELETED=$((DELETED + 1))
+      fi
+    done < <(git branch --list 'delegate-checkpoint-*' | sed 's/^[* ]*//')
+    echo "[cleanup] Deleted $DELETED stale checkpoint(s)"
+    ;;
+
+  *)
+    echo "ERROR: unknown action '$ACTION' — use create, rollback, accept, or cleanup" >&2
+    exit 1
+    ;;
+
+esac

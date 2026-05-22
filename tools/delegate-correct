@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# delegate-correct — send a correction prompt back to a harness adapter
+# Usage: delegate-correct <harness> <workdir> <correction-prompt> [timeout-secs]
+#
+# Runs a correction turn with max 3 turns (surgical fix, not a full re-run).
+# Only adapters that accept the standard interface are supported.
+
+set -euo pipefail
+
+HARNESS="${1:?Usage: delegate-correct <harness> <workdir> <correction-prompt> [timeout-secs]}"
+WORKDIR="${2:?Workdir required}"
+CORRECTION_PROMPT="${3:?Correction prompt required}"
+TIMEOUT_SECS="${4:-180}"
+
+ADAPTER_DIR="$(cd "$(dirname "$0")/adapters" 2>/dev/null && pwd)"
+if [ -z "$ADAPTER_DIR" ] || [ ! -f "$ADAPTER_DIR/$HARNESS" ]; then
+  echo "ERROR: unknown harness '$HARNESS' — no adapter found at $ADAPTER_DIR/$HARNESS" >&2
+  exit 1
+fi
+
+if [ ! -d "$WORKDIR" ]; then
+  echo "ERROR: workdir '$WORKDIR' does not exist" >&2
+  exit 1
+fi
+
+# Write correction prompt to a temp file for shell safety
+PROMPT_FILE=$(mktemp /tmp/delegate-correct-prompt-XXXXXX.txt)
+printf '%s' "$CORRECTION_PROMPT" > "$PROMPT_FILE"
+trap 'rm -f "$PROMPT_FILE"' EXIT
+
+AGENT="${DELEGATE_AGENT:-}"
+MAX_TURNS=3
+
+echo "=== CORRECTION TURN (${HARNESS}, max ${MAX_TURNS} turns) ==="
+echo "Correction: ${CORRECTION_PROMPT:0:120}..."
+echo "=========================="
+
+DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX.json)
+printf '{}' > "$DELEGATE_STATS_FILE"
+export DELEGATE_STATS_FILE
+
+"$ADAPTER_DIR/$HARNESS" "$WORKDIR" "$PROMPT_FILE" "$MAX_TURNS" "$AGENT" "$TIMEOUT_SECS" "$DELEGATE_STATS_FILE"
+ADAPTER_EXIT=$?
+
+rm -f "$DELEGATE_STATS_FILE"
+
+if [ "$ADAPTER_EXIT" -eq 0 ]; then
+  echo "=== CORRECTION DONE (exit: 0) ==="
+else
+  echo "=== CORRECTION FAILED (exit: $ADAPTER_EXIT) ==="
+fi
+
+exit $ADAPTER_EXIT

@@ -1,0 +1,17 @@
+name: multi-harness-implement
+description: Implement with one model, review with another, orchestrator validates
+
+steps:
+  - role: implementor
+    harness: pi
+    model: minimax
+    agent: default
+    turns: 12
+    prompt_template: "Implement the following task. Write clean, working code.\n\nTASK: {task}\n\nVERIFY: grep for the main function/class you created and confirm it exists."
+
+  - role: reviewer
+    harness: pi
+    model: glm
+    agent: default
+    turns: 5
+    prompt_template: "Review the recent git diff for correctness. Check for: missing imports, wrong variable names, logic errors, duplicate code, broken call sites.\n\nOriginal task: {task}\n\nIf you find issues, list them clearly. If clean, say LGTM."

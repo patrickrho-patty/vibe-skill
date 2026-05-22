@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# delegate-check-brief — check if .delegate/project-brief.md is current
+# Usage: delegate-check-brief [workdir]
+# Exit 0 + prints brief path if current.
+# Exit 1 if missing or stale (caller should run delegate-distill).
+
+set -euo pipefail
+
+WORKDIR="${1:-$PWD}"
+BRIEF="$WORKDIR/.delegate/project-brief.md"
+
+if [[ ! -f "$BRIEF" ]]; then
+  echo "no brief"
+  exit 1
+fi
+
+# Extract hash section from brief (between <!-- _hashes: and -->)
+HASH_BLOCK=$(python3 - "$BRIEF" <<'PYEOF'
+import sys, re
+text = open(sys.argv[1]).read()
+m = re.search(r'<!-- _hashes:\n(.*?)-->', text, re.S)
+if m:
+    print(m.group(1).strip())
+PYEOF
+)
+
+if [[ -z "$HASH_BLOCK" ]]; then
+  echo "stale"
+  exit 1
+fi
+
+# Helper: sha256 first 16 hex chars of a file
+file_hash() {
+  local f="$1"
+  if [[ ! -f "$f" ]]; then echo ""; return; fi
+  shasum -a 256 "$f" 2>/dev/null | cut -c1-16
+}
+
+# Re-compute hashes for key files found in the brief's hash block
+STALE=0
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  KEY="${line%%:*}"
+  STORED="${line#*:}"
+  CURRENT=""
+
+  case "$KEY" in
+    manifest)
+      for mf in package.json requirements.txt pyproject.toml go.mod Cargo.toml Gemfile composer.json pom.xml; do
+        if [[ -f "$WORKDIR/$mf" ]]; then
+          CURRENT=$(file_hash "$WORKDIR/$mf")
+          break
+        fi
+      done
+      ;;
+    entry)
+      for ep in main.py app.py index.js index.ts main.go main.rs server.py server.js server.ts manage.py cli.py; do
+        if [[ -f "$WORKDIR/$ep" ]]; then
+          CURRENT=$(file_hash "$WORKDIR/$ep")
+          break
+        fi
+      done
+      ;;
+    models)
+      # Combine hashes of all model/schema/entity files
+      MODEL_INPUT=""
+      while IFS= read -r mfile; do
+        MODEL_INPUT+=$(file_hash "$mfile")
+      done < <(find "$WORKDIR" -maxdepth 5 \
+        -not -path "*/.git/*" \
+        -not -path "*/node_modules/*" \
+        -not -path "*/.delegate/*" \
+        -not -path "*/venv/*" \
+        -not -path "*/__pycache__/*" \
+        -not -path "*/worktrees/*" \
+        \( -iname "*model*" -o -iname "*schema*" -o -iname "*entity*" \) \
+        -type f 2>/dev/null | sort)
+      if [[ -n "$MODEL_INPUT" ]]; then
+        CURRENT=$(printf '%s' "$MODEL_INPUT" | shasum -a 256 | cut -c1-16)
+      fi
+      ;;
+  esac
+
+  if [[ "$CURRENT" != "$STORED" ]]; then
+    STALE=1
+    break
+  fi
+done <<< "$HASH_BLOCK"
+
+if [[ "$STALE" -eq 1 ]]; then
+  echo "stale"
+  exit 1
+fi
+
+echo "$BRIEF"
+exit 0

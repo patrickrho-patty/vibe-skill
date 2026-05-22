@@ -1,0 +1,19 @@
+# implement.yaml — Plan, implement, validate
+name: implement
+description: Plan, implement, validate
+
+steps:
+  - role: planner
+    agent: code-architect
+    turns: 5
+    prompt_template: "Analyze the codebase and create an implementation plan for: {task}"
+
+  - role: implementor
+    agent: default
+    turns: 12
+    prompt_template: "Based on the plan, implement: {task}"
+
+  - role: validator
+    agent: code-reviewer
+    turns: 3
+    prompt_template: "Review the changes made for: {task}. Check for bugs, missing imports, duplicate code."

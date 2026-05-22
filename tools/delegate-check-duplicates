@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""
+delegate-check-duplicates — detect duplicate code and regression patterns
+Usage: delegate-check-duplicates <workdir>
+
+Scans modified files for:
+1. Duplicate function/class definitions (same name twice)
+2. Repeated code blocks (>5 identical consecutive lines)
+3. Merge conflict markers
+4. Reverted/duplicate imports
+"""
+import sys, os, re, subprocess
+from pathlib import Path
+from collections import Counter
+
+def get_modified_files(workdir: str) -> list:
+    """Get files modified since last commit."""
+    r = subprocess.run(
+        ['git', 'diff', '--name-only'],
+        capture_output=True, text=True, cwd=workdir
+    )
+    files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
+    # Also check untracked
+    r2 = subprocess.run(
+        ['git', 'ls-files', '--others', '--exclude-standard'],
+        capture_output=True, text=True, cwd=workdir
+    )
+    files += [f.strip() for f in r2.stdout.splitlines() if f.strip()]
+    return files
+
+def check_duplicate_definitions(content: str, filepath: str) -> list:
+    """Find duplicate function/class definitions."""
+    issues = []
+    # Python
+    if filepath.endswith('.py'):
+        funcs = re.findall(r'^(?:def|class)\s+(\w+)', content, re.M)
+        dupes = [name for name, count in Counter(funcs).items() if count > 1]
+        for d in dupes:
+            issues.append(f"Duplicate definition: '{d}' defined {Counter(funcs)[d]} times")
+    # JavaScript/TypeScript
+    elif filepath.endswith(('.js', '.ts', '.jsx', '.tsx')):
+        funcs = re.findall(r'^(?:function|class|const|let|var)\s+(\w+)', content, re.M)
+        dupes = [name for name, count in Counter(funcs).items() if count > 1]
+        for d in dupes:
+            issues.append(f"Duplicate definition: '{d}' defined {Counter(funcs)[d]} times")
+    return issues
+
+def check_repeated_blocks(content: str) -> list:
+    """Find >5 identical consecutive lines (copy-paste bug)."""
+    issues = []
+    lines = content.splitlines()
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip():
+            i += 1
+            continue
+        count = 1
+        while i + count < len(lines) and lines[i + count] == lines[i]:
+            count += 1
+        if count > 5:
+            issues.append(f"Repeated line {count} times at line {i+1}: '{lines[i].strip()[:60]}'")
+        i += count
+
+    # Check for repeated blocks (groups of lines)
+    block_size = 5
+    if len(lines) >= block_size * 2:
+        for i in range(len(lines) - block_size * 2 + 1):
+            block = '\n'.join(lines[i:i+block_size])
+            if not block.strip():
+                continue
+            rest = '\n'.join(lines[i+block_size:])
+            if block in rest:
+                # Verify it's an exact duplicate, not just similar
+                next_occurrence = rest.find(block)
+                if next_occurrence < block_size * 100:  # Within reasonable proximity
+                    issues.append(f"Duplicated {block_size}-line block at line {i+1}")
+                    break  # Only report first duplicate block per file
+    return issues
+
+def check_conflict_markers(content: str) -> list:
+    """Find merge conflict markers."""
+    issues = []
+    markers = ['<<<<<<<', '=======', '>>>>>>>']
+    for i, line in enumerate(content.splitlines(), 1):
+        for marker in markers:
+            if line.strip().startswith(marker):
+                issues.append(f"Merge conflict marker at line {i}: {line.strip()[:40]}")
+    return issues
+
+def check_duplicate_imports(content: str, filepath: str) -> list:
+    """Find duplicate import statements."""
+    issues = []
+    if filepath.endswith('.py'):
+        imports = re.findall(r'^((?:from\s+\S+\s+)?import\s+.+)$', content, re.M)
+        dupes = [imp for imp, count in Counter(imports).items() if count > 1]
+        for d in dupes:
+            issues.append(f"Duplicate import: '{d}'")
+    elif filepath.endswith(('.js', '.ts', '.jsx', '.tsx')):
+        imports = re.findall(r'^(import\s+.+)$', content, re.M)
+        dupes = [imp for imp, count in Counter(imports).items() if count > 1]
+        for d in dupes:
+            issues.append(f"Duplicate import: '{d}'")
+    return issues
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: delegate-check-duplicates <workdir>", file=sys.stderr)
+        sys.exit(1)
+
+    workdir = sys.argv[1]
+    files = get_modified_files(workdir)
+
+    all_issues = []
+    for filepath in files:
+        full_path = Path(workdir) / filepath
+        if not full_path.exists() or not full_path.is_file():
+            continue
+        # Only check code files
+        if not filepath.endswith(('.py', '.js', '.ts', '.jsx', '.tsx', '.rb', '.go', '.rs', '.php')):
+            continue
+        try:
+            content = full_path.read_text(errors='replace')
+        except Exception:
+            continue
+
+        issues = []
+        issues += check_duplicate_definitions(content, filepath)
+        issues += check_repeated_blocks(content)
+        issues += check_conflict_markers(content)
+        issues += check_duplicate_imports(content, filepath)
+
+        for issue in issues:
+            all_issues.append((filepath, issue))
+            print(f'  [DUP] {filepath}: {issue}')
+
+    if all_issues:
+        print(f"\n=== DUPLICATES/REGRESSIONS: {len(all_issues)} issue(s) found ===")
+        sys.exit(1)
+    elif files:
+        code_files = [f for f in files if f.endswith(('.py', '.js', '.ts', '.jsx', '.tsx', '.rb', '.go', '.rs', '.php'))]
+        if code_files:
+            print(f"=== DUPLICATE CHECK OK ({len(code_files)} file(s)) ===")
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main()

@@ -2,3 +2,5 @@
 *.swp
 *~
 /tmp/
+.delegate/project-brief.md
+.delegate/correction-prompt.txt

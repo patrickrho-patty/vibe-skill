@@ -1,0 +1,16 @@
+name: cross-validate
+description: Same task sent to two harnesses, orchestrator picks the best result
+
+steps:
+  - role: implementor-a
+    harness: vibe
+    model: deepseek-flash
+    agent: default
+    turns: 10
+    prompt_template: "Implement: {task}\n\nWrite minimal, correct code. Do not over-engineer."
+
+  - role: implementor-b
+    harness: opencode
+    agent: default
+    turns: 10
+    prompt_template: "Implement: {task}\n\nWrite minimal, correct code. Do not over-engineer."

@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""
+delegate-batch — smart batching for bulk delegation tasks
+Usage: delegate-batch <workdir> <batch-prompt> [harness]
+"""
+import sys, os, re, subprocess
+from pathlib import Path
+
+MAX_FILES_PER_BATCH = 3
+MAX_TURNS_PER_BATCH = 10
+
+def find_target_files(workdir: str, prompt: str) -> list:
+    """Extract target files/directories from the prompt and find matching files."""
+    # Try to extract explicit paths
+    path_patterns = re.findall(r'(?:in|from|at|under)\s+(\S+/?)', prompt)
+
+    # Try to extract file extensions
+    ext_patterns = re.findall(r'\.(py|js|ts|tsx|jsx|go|rs|rb|php)\b', prompt)
+
+    # Try to extract directory references
+    dir_refs = re.findall(r'(?:in|from|under|across)\s+(\w+/)', prompt)
+
+    files = []
+    root = Path(workdir)
+    skip = {'.git', 'node_modules', '.delegate', 'venv', '.venv', '__pycache__', 'dist', 'build'}
+
+    # If we found specific paths, search there
+    search_dirs = []
+    for p in path_patterns + dir_refs:
+        candidate = root / p.strip('/')
+        if candidate.is_dir():
+            search_dirs.append(candidate)
+
+    if not search_dirs:
+        search_dirs = [root]
+
+    # Determine which extensions to look for
+    if ext_patterns:
+        extensions = set('.' + e for e in ext_patterns)
+    else:
+        # Infer from prompt keywords
+        if any(w in prompt.lower() for w in ['python', 'def ', 'class ', 'import ']):
+            extensions = {'.py'}
+        elif any(w in prompt.lower() for w in ['javascript', 'function', 'const ', 'react']):
+            extensions = {'.js', '.jsx', '.ts', '.tsx'}
+        elif any(w in prompt.lower() for w in ['go ', 'golang', 'func ']):
+            extensions = {'.go'}
+        else:
+            extensions = {'.py', '.js', '.ts', '.jsx', '.tsx'}  # Default
+
+    for search_dir in search_dirs:
+        for dirpath, dirnames, filenames in os.walk(search_dir):
+            depth = len(Path(dirpath).relative_to(root).parts)
+            if depth >= 6:
+                dirnames.clear()
+                continue
+            dirnames[:] = [d for d in dirnames if d not in skip]
+            for fname in filenames:
+                p = Path(dirpath) / fname
+                if p.suffix in extensions:
+                    files.append(str(p.relative_to(root)))
+
+    return sorted(files)
+
+def group_files(files: list, max_per_batch: int = MAX_FILES_PER_BATCH) -> list:
+    """Group files into batches, keeping related files together."""
+    # Group by directory first
+    dir_groups = {}
+    for f in files:
+        d = str(Path(f).parent)
+        dir_groups.setdefault(d, []).append(f)
+
+    batches = []
+    current_batch = []
+
+    for directory in sorted(dir_groups.keys()):
+        group_files_list = dir_groups[directory]
+        for f in group_files_list:
+            current_batch.append(f)
+            if len(current_batch) >= max_per_batch:
+                batches.append(current_batch)
+                current_batch = []
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+def estimate_cost(batches: list) -> float:
+    """Rough cost estimate: ~5000 tokens per file at $0.002/1K tokens."""
+    total_files = sum(len(b) for b in batches)
+    tokens_estimate = total_files * 5000
+    return tokens_estimate * 0.002 / 1000
+
+def run_batch(workdir: str, files: list, base_prompt: str, harness: str, batch_num: int, total: int) -> int:
+    """Run a single batch delegation."""
+    file_list = ', '.join(files)
+    prompt = f"Files to modify: {file_list}\n\n{base_prompt}\n\nOnly modify the listed files. Do not touch other files."
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    delegate = os.path.join(script_dir, 'delegate')
+
+    print(f"\n--- Batch {batch_num}/{total}: {file_list} ---")
+
+    result = subprocess.run(
+        [delegate, harness, workdir, prompt, str(MAX_TURNS_PER_BATCH)],
+        cwd=workdir
+    )
+    return result.returncode
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: delegate-batch <workdir> <batch-prompt> [harness]", file=sys.stderr)
+        sys.exit(1)
+
+    workdir = sys.argv[1]
+    prompt = sys.argv[2]
+    harness = sys.argv[3] if len(sys.argv) > 3 else 'vibe'
+
+    print("=== SMART BATCH DELEGATION ===")
+    print(f"Workdir : {workdir}")
+    print(f"Harness : {harness}")
+    print(f"Prompt  : {prompt[:100]}...")
+
+    # Find target files
+    files = find_target_files(workdir, prompt)
+    if not files:
+        print("\nNo matching files found for this task.")
+        sys.exit(0)
+
+    print(f"\nFound {len(files)} target file(s):")
+    for f in files[:20]:
+        print(f"  {f}")
+    if len(files) > 20:
+        print(f"  ... and {len(files) - 20} more")
+
+    # Group into batches
+    batches = group_files(files)
+    cost = estimate_cost(batches)
+
+    print(f"\nBatches: {len(batches)} (max {MAX_FILES_PER_BATCH} files each)")
+    print(f"Estimated cost: ~${cost:.4f}")
+    print("=" * 40)
+
+    # Run batches
+    successes = 0
+    failures = 0
+
+    for i, batch in enumerate(batches, 1):
+        exit_code = run_batch(workdir, batch, prompt, harness, i, len(batches))
+        if exit_code == 0:
+            successes += 1
+        else:
+            failures += 1
+            print(f"  Batch {i} FAILED (exit {exit_code})")
+
+    # Summary
+    print(f"\n=== BATCH COMPLETE ===")
+    print(f"Succeeded: {successes}/{len(batches)}")
+    if failures > 0:
+        print(f"Failed: {failures}/{len(batches)}")
+        sys.exit(1)
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""delegate-router: Analyze run history and recommend harnesses for task types."""
+
+import json
+import sys
+import os
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+
+RUNS_FILE = os.path.expanduser("~/.local/share/delegate-runs.jsonl")
+HARNESSES = ["vibe", "pi", "opencode"]
+TASK_TYPES = [
+    "refactor", "bugfix", "test", "docs", "greenfield",
+    "modification", "removal", "frontend", "api", "database", "general"
+]
+
+
+def classify_task(description: str) -> str:
+    """Classify a task description into a type."""
+    desc = description.lower()
+
+    if any(w in desc for w in ['refactor', 'rename', 'extract', 'move', 'reorganize', 'restructure', 'clean up']):
+        return 'refactor'
+    if any(w in desc for w in ['fix', 'bug', 'broken', 'error', 'crash', 'issue', 'wrong', 'fail']):
+        return 'bugfix'
+    if any(w in desc for w in ['test', 'spec', 'assert', 'coverage', 'unittest', 'pytest']):
+        return 'test'
+    if any(w in desc for w in ['doc', 'comment', 'readme', 'docstring', 'jsdoc', 'typedoc']):
+        return 'docs'
+    if any(w in desc for w in ['add', 'create', 'implement', 'build', 'new', 'feature']):
+        return 'greenfield'
+    if any(w in desc for w in ['update', 'change', 'modify', 'adjust', 'tweak']):
+        return 'modification'
+    if any(w in desc for w in ['delete', 'remove', 'drop', 'deprecate']):
+        return 'removal'
+    if any(w in desc for w in ['style', 'css', 'ui', 'layout', 'design', 'theme', 'color']):
+        return 'frontend'
+    if any(w in desc for w in ['api', 'route', 'endpoint', 'handler', 'middleware']):
+        return 'api'
+    if any(w in desc for w in ['database', 'migration', 'schema', 'model', 'query', 'sql']):
+        return 'database'
+    return 'general'
+
+
+def load_runs(since_days: int = None):
+    """Load runs from the JSONL file, optionally filtered by days."""
+    if not os.path.exists(RUNS_FILE):
+        return []
+
+    runs = []
+    cutoff = None
+    if since_days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    try:
+        with open(RUNS_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    run = json.loads(line)
+                    if cutoff is not None:
+                        ts = run.get("ts") or run.get("timestamp")
+                        if ts:
+                            try:
+                                run_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                                if run_time < cutoff:
+                                    continue
+                            except (ValueError, AttributeError):
+                                pass
+                    runs.append(run)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+
+    return runs
+
+
+def compute_table(runs: list) -> dict:
+    """Compute routing table: harness -> task_type -> stats."""
+    # harness -> task_type -> list of run stats
+    data = defaultdict(lambda: defaultdict(list))
+
+    for run in runs:
+        harness = run.get("harness")
+        if not harness:
+            continue
+
+        # Classify based on stored task description if available
+        task_desc = run.get("task") or run.get("prompt") or run.get("description") or ""
+        task_type = run.get("task_type") or classify_task(task_desc)
+
+        exit_code = run.get("exit_code")
+        final_disposition = run.get("final_disposition", "")
+        cost = run.get("cost_usd", 0.0) or 0.0
+        corrections = run.get("correction_rounds", 0) or 0
+        duration = run.get("duration_secs", 0.0) or 0.0
+
+        success = (
+            exit_code == 0 and
+            final_disposition in ("accepted", "corrected", "")
+        )
+
+        data[harness][task_type].append({
+            "success": success,
+            "cost": float(cost),
+            "corrections": int(corrections),
+            "duration": float(duration),
+        })
+
+    # Build stats dict
+    table = {}
+    for harness, type_data in data.items():
+        table[harness] = {}
+        for task_type, run_list in type_data.items():
+            n = len(run_list)
+            success_count = sum(1 for r in run_list if r["success"])
+            table[harness][task_type] = {
+                "runs": n,
+                "success_rate": success_count / n if n > 0 else 0.0,
+                "avg_cost": sum(r["cost"] for r in run_list) / n if n > 0 else 0.0,
+                "avg_corrections": sum(r["corrections"] for r in run_list) / n if n > 0 else 0.0,
+                "avg_duration": sum(r["duration"] for r in run_list) / n if n > 0 else 0.0,
+            }
+
+    return table
+
+
+def recommend(task_type: str, table: dict) -> str:
+    """Recommend best harness for a task type."""
+    candidates = []
+    for harness, stats in table.items():
+        if task_type in stats and stats[task_type]['runs'] >= 3:
+            s = stats[task_type]
+            score = (
+                s['success_rate'] * 0.5 +
+                (1 - min(s['avg_cost'] / 0.01, 1)) * 0.3 +
+                (1 - min(s['avg_duration'] / 300, 1)) * 0.2
+            )
+            candidates.append((harness, score, s))
+
+    if not candidates:
+        return 'vibe'
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
+
+
+def cmd_classify(args):
+    if not args:
+        print("Usage: delegate-router classify <task-description>", file=sys.stderr)
+        sys.exit(1)
+    description = " ".join(args)
+    task_type = classify_task(description)
+    print(task_type)
+
+
+def cmd_recommend(args):
+    if not args:
+        print("Usage: delegate-router recommend <task-description>", file=sys.stderr)
+        sys.exit(1)
+    description = " ".join(args)
+    task_type = classify_task(description)
+
+    runs = load_runs()
+    table = compute_table(runs)
+
+    best = recommend(task_type, table)
+
+    print(f"Task type: {task_type}")
+    print(f"Recommended harness: {best}")
+    print()
+
+    if not runs:
+        print("Note: No run data found — using cold-start default (vibe).")
+        print(f"      Data would be loaded from: {RUNS_FILE}")
+        return
+
+    print("Reasoning:")
+    # Collect all harnesses seen in table plus known ones
+    all_harnesses = sorted(set(list(table.keys()) + HARNESSES))
+    for harness in all_harnesses:
+        stats = table.get(harness, {})
+        if task_type in stats:
+            s = stats[task_type]
+            n = s["runs"]
+            if n >= 3:
+                ok_pct = int(s["success_rate"] * 100)
+                cost = s["avg_cost"]
+                dur = s["avg_duration"]
+                marker = " *" if harness == best else ""
+                print(f"  {harness}: {ok_pct}% success, avg ${cost:.3f}, avg {dur:.0f}s ({n} runs){marker}")
+            else:
+                print(f"  {harness}: insufficient data ({n} run{'s' if n != 1 else ''})")
+        else:
+            print(f"  {harness}: no data")
+
+
+def cmd_table(args):
+    since_days = 30
+    if "--since" in args:
+        idx = args.index("--since")
+        if idx + 1 < len(args):
+            try:
+                since_days = int(args[idx + 1])
+            except ValueError:
+                print("Error: --since requires an integer number of days", file=sys.stderr)
+                sys.exit(1)
+
+    runs = load_runs(since_days=since_days)
+
+    if not runs:
+        print("No run data found.")
+        print(f"Expected data file: {RUNS_FILE}")
+        print()
+        print("Default recommendation: vibe (cold start)")
+        return
+
+    table = compute_table(runs)
+
+    print(f"=== ROUTING TABLE (last {since_days} days) ===")
+    print()
+
+    # Determine which harnesses and task types have data
+    harnesses_with_data = sorted(set(list(table.keys())))
+    task_types_with_data = set()
+    for h_stats in table.values():
+        task_types_with_data.update(h_stats.keys())
+    # Order task types by TASK_TYPES list, then any extras
+    ordered_types = [t for t in TASK_TYPES if t in task_types_with_data]
+    ordered_types += sorted(task_types_with_data - set(TASK_TYPES))
+
+    if not harnesses_with_data or not ordered_types:
+        print("No data to display.")
+        return
+
+    # Header
+    col_w = 24  # width per harness block
+    label_w = 12
+    header1 = " " * label_w
+    header2 = " " * label_w
+    sep = "-" * label_w
+
+    for harness in harnesses_with_data:
+        header1 += f"{harness:^{col_w}}"
+        header2 += f"{'runs':>5}{'ok%':>5}{'cost':>6}{'dur':>6}  "
+        sep += "-" * col_w
+
+    print(header1)
+    print(header2)
+    print(sep)
+
+    for task_type in ordered_types:
+        row = f"{task_type:<{label_w}}"
+        for harness in harnesses_with_data:
+            stats = table.get(harness, {}).get(task_type)
+            if stats and stats["runs"] > 0:
+                n = stats["runs"]
+                ok = int(stats["success_rate"] * 100)
+                cost = stats["avg_cost"]
+                dur = stats["avg_duration"]
+                cost_str = f".{int(cost*1000):03d}" if cost < 0.1 else f"{cost:.2f}"
+                dur_str = f"{dur:.0f}s"
+                row += f"{n:>5}{ok:>4}%{cost_str:>6}{dur_str:>6}  "
+            else:
+                row += f"{'0':>5}{'  -':>5}{'  -':>6}{'  -':>6}  "
+        print(row)
+
+    print()
+    total = len(runs)
+    harness_counts = defaultdict(int)
+    for run in runs:
+        h = run.get("harness")
+        if h:
+            harness_counts[h] += 1
+    counts_str = ", ".join(f"{h}={harness_counts[h]}" for h in sorted(harness_counts))
+    print(f"Total runs in window: {total} ({counts_str})")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("Usage: delegate-router <command> [args]")
+        print()
+        print("Commands:")
+        print("  classify <task-description>   Classify a task into a type")
+        print("  recommend <task-description>  Recommend best harness for a task")
+        print("  table [--since DAYS]          Show routing table (default: last 30 days)")
+        sys.exit(0)
+
+    command = args[0]
+    rest = args[1:]
+
+    if command == "classify":
+        cmd_classify(rest)
+    elif command == "recommend":
+        cmd_recommend(rest)
+    elif command == "table":
+        cmd_table(rest)
+    else:
+        print(f"Unknown command: {command}", file=sys.stderr)
+        print("Use: classify, recommend, or table", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

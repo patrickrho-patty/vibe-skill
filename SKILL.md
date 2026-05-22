@@ -1,9 +1,10 @@
 ---
 name: vibe
 description: >
-  Delegate a coding task to Mistral Vibe and supervise the result via git diff.
-  Trigger: /vibe <instruction>. Claude orchestrates, Vibe codes.
-  Also handles /vibe-report [--since N] [--project NAME] [--fails] — token/cost/failure report.
+  Delegate coding tasks to cheap AI coding agents (Vibe, Pi, OpenCode) and supervise
+  via git diff. Multi-harness support with reject-correct loops, contracts, parallel
+  execution, and routing. Trigger: /vibe <instruction> or /delegate <harness> <instruction>.
+  Also: /vibe-report, /delegate-dashboard, /delegate-chain, /delegate-batch.
 license: MIT
 user-invocable: true
 allowed-tools:
@@ -12,7 +13,7 @@ allowed-tools:
   - grep
 ---
 
-# Vibe Orchestrator
+# Delegate Orchestrator
 
 ## /vibeon | /vibeoff | /vibestatus
 
@@ -71,8 +72,32 @@ Run the bash command, print one confirmation line showing the active model, and 
 
 ---
 
-When the user invokes `/vibe <instruction>`, Claude delegates the implementation
-to Mistral Vibe via its programmatic mode, supervises in real time, and reports.
+## Multi-Harness Commands
+
+| Command | Action |
+|---------|--------|
+| `/vibe <instruction>` | Delegate to Vibe (default harness) |
+| `/delegate <harness> <instruction>` | Delegate to specific harness (vibe, pi, opencode) |
+| `/delegate-dashboard` | Show live TUI dashboard: `~/tools/delegate-dashboard` |
+| `/delegate-batch <prompt>` | Smart batch: `~/tools/delegate-batch "$WORKDIR" "<prompt>"` |
+| `/delegate-chain <chain>` | Run chain: `~/tools/delegate-chain "$WORKDIR" ".delegate/chains/<chain>.yaml"` |
+| `/delegate-route <description>` | Recommend harness: `~/tools/delegate-router recommend "<desc>"` |
+
+**Harness selection:** Use `/delegate-route` to check which harness is best for
+a task, or pick manually. Default is `vibe` until routing data accumulates.
+
+**Available harnesses:**
+
+| Harness | Status | Strengths |
+|---------|--------|-----------|
+| `vibe` | Active | General implementation, mature adapter |
+| `pi` | Stub | Pending Pi CLI investigation |
+| `opencode` | Stub | Pending OpenCode CLI investigation |
+
+---
+
+When the user invokes `/vibe <instruction>` or `/delegate <harness> <instruction>`,
+the orchestrator delegates to the specified harness, supervises, and reports.
 
 ---
 
@@ -145,11 +170,34 @@ escaping. **This is not a reason to build a workaround script** — that doubles
 **Critical rule**: Vibe is optimized for **atomic, focused tasks**.
 Its system prompt literally says "Most tasks need <150 words."
 
-**Decide whether to delegate at all:**
+**First: is this even a coding task?**
 
-`vibe-delegate` has real orchestration overhead (pseudo-TTY allocation, stream parser,
-TOML pricing lookup, git diff, JSON log). For trivial changes the setup cost exceeds the
-savings. Apply this filter first:
+Delegates are coding agents — they read files and write code. They cannot answer
+questions, explain concepts, have conversations, or provide analysis. Never delegate:
+
+| NOT delegatable | Handle directly |
+|-----------------|----------------|
+| Questions ("what does this function do?") | Answer from context |
+| Explanations ("explain the auth flow") | Explain directly |
+| Conversations ("what should we build?") | Discuss directly |
+| Code review (opinion-based) | Review directly |
+| Debugging analysis ("why is this failing?") | Investigate directly |
+| Architecture decisions | Decide directly |
+| Git operations (commit, push, branch) | Run directly |
+
+Only delegate when the task produces **file changes** — new code, modified code,
+documentation edits, config updates. If the user's intent doesn't result in writing
+to disk, the orchestrator handles it directly.
+
+**For auto-vibe mode (`/vibeon`):** This gate still applies. Even with auto-vibe
+enabled, questions and conversations stay with the orchestrator. Only route to a
+delegate when the user's message implies file changes.
+
+**Then: is it worth delegating?**
+
+`delegate` has real orchestration overhead (pseudo-TTY allocation, stream parser,
+pricing lookup, git diff, JSON log). For trivial changes the setup cost exceeds the
+savings. Apply this filter:
 
 | Signal | Action |
 |--------|--------|
@@ -235,21 +283,26 @@ VERIFY: grep for "datetime.date" in app.py and confirm it appears in fetch_data.
 
 ---
 
-## Step 4 — Launch Vibe
+## Step 4 — Launch Delegation
 
 ```bash
-~/tools/vibe-delegate "<workdir>" "<prompt>" [max-turns] [agent] [timeout-secs]
+~/tools/delegate <harness> "<workdir>" "<prompt>" [max-turns] [agent] [timeout-secs]
 ```
 
 | Argument       | Default  | Notes                                           |
 |----------------|----------|-------------------------------------------------|
+| `harness`      | `vibe`   | Which coding agent: vibe, pi, opencode          |
 | `workdir`      | —        | Absolute path, must exist                       |
 | `prompt`       | —        | Self-contained task description                 |
-| `max-turns`    | `10`     | Mistral turn limit — hard cap at 12, never more |
+| `max-turns`    | `10`     | Turn limit — hard cap at 12, never more         |
 | `agent`        | *(none)* | See agent table below                           |
 | `timeout-secs` | `180`    | Wall-clock kill timer                           |
 
-The script allocates a pseudo-TTY via `script` (required — vibe hangs without one).
+The script automatically: creates a rollback checkpoint, injects the project brief
+(if `.delegate/project-brief.md` exists), runs pre-contracts, allocates a pseudo-TTY
+(vibe-specific), runs post-contracts, checks for duplicates, and logs to JSONL.
+
+**Backward compat:** `~/tools/vibe-delegate` still works (shim to `delegate vibe`).
 
 **Available agents:**
 
@@ -335,15 +388,40 @@ Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x2.0)
 
 ---
 
-## Step 6 — Iteration
+## Step 6 — Review and Correct (Reject-Correct Loop)
 
-- **Max 3 attempts** per sub-task before escalating to the user.
-- Between attempts, **read the git diff** to avoid doubling partial work.
-- If Vibe completed ≥50% and crashed: finish the rest manually rather than relaunching.
+**Critical rule: the orchestrator NEVER writes code itself during delegation.**
+Its only actions are: review the diff, write correction prompts, send back to harness.
 
-## Step 6b — Log manual completion
+After the delegate finishes, classify the result:
 
-When you finish a task manually (after Vibe failures), run this immediately after editing:
+| Disposition | Action |
+|-------------|--------|
+| `accept` | Changes look correct → done |
+| `reject-correct` | Specific fixable issues → send correction back to harness |
+| `reject-retry` | Fundamentally wrong approach → full re-run with new prompt |
+| `reject-abort` | Unfixable by harness → escalate to user |
+
+**To send a correction back:**
+```bash
+~/tools/delegate-reject "$WORKDIR" "The import on line 3 is wrong. Change from utils import foo to from app.utils import foo. Do not touch anything else."
+```
+Then re-run `~/tools/delegate <harness> "$WORKDIR" "<original-prompt>"` — the
+correction file is picked up automatically (max 2 correction rounds).
+
+**Rollback if needed:**
+```bash
+~/tools/delegate-rollback rollback "$WORKDIR" "<checkpoint-branch>"
+```
+
+- **Max 2 correction rounds** before escalating to `reject-retry` or `reject-abort`.
+- Between rounds, **read the git diff** to avoid doubling partial work.
+- If all correction rounds fail, escalate to the user — do NOT fix it yourself.
+- Record failures: `~/tools/delegate-failures record "$WORKDIR" vibe <error_type> "<symptom>" "<fix>"`
+
+## Step 6b — Log manual completion (legacy)
+
+When the orchestrator must log manual work (should be rare with reject-correct):
 
 ```bash
 python3 -c "
@@ -493,7 +571,50 @@ jq 'select(.search_replace_fails > 0)' ~/.local/share/delegate-runs.jsonl
 
 ---
 
+## Additional JSONL Fields (new)
+
+| Field                 | Type    | Description                                          |
+|-----------------------|---------|------------------------------------------------------|
+| `harness`             | string  | Which harness was used (vibe, pi, opencode)          |
+| `checkpoint`          | string  | Rollback checkpoint branch name                      |
+| `correction_rounds`   | int     | Number of reject-correct cycles (0 = accepted first) |
+| `final_disposition`   | string  | `accepted`, `corrected`, `correction_failed`         |
+| `contract_post_pass`  | bool    | Whether post-condition contracts passed              |
+| `session_file`        | string  | Path to replay session file (F16)                    |
+
+---
+
+## Tools Reference
+
+| Tool | Purpose |
+|------|---------|
+| `~/tools/delegate` | Generic delegation entry point |
+| `~/tools/adapters/vibe` | Vibe harness adapter |
+| `~/tools/adapters/pi` | Pi adapter (stub) |
+| `~/tools/adapters/opencode` | OpenCode adapter (stub) |
+| `~/tools/delegate-rollback` | Git branch checkpoint management |
+| `~/tools/delegate-reject` | Write correction prompt for reject-correct |
+| `~/tools/delegate-correct` | Send correction to harness directly |
+| `~/tools/delegate-contracts` | Run pre/post condition checks |
+| `~/tools/delegate-check-duplicates` | Detect duplicate code and regressions |
+| `~/tools/delegate-ast-check` | AST-level semantic validation |
+| `~/tools/delegate-failures` | Failure memory — record and query |
+| `~/tools/delegate-learnings` | Learning loop — capture correction patterns |
+| `~/tools/delegate-router` | Recommend harness based on run history |
+| `~/tools/delegate-parallel` | Run tasks in parallel via git worktrees |
+| `~/tools/delegate-batch` | Smart batching for bulk tasks |
+| `~/tools/delegate-chain` | Multi-step delegation workflows |
+| `~/tools/delegate-replay` | Replay recorded delegation sessions |
+| `~/tools/delegate-dashboard` | Live TUI dashboard |
+| `~/tools/delegate-distill` | Generate project brief for context injection |
+| `~/tools/delegate-report` | Historical token/cost/failure report |
+| `~/tools/vibe-delegate` | Backward-compat shim → `delegate vibe` |
+
+---
+
 ## See Also
 
-A sister delegate using Gemini CLI exists: [gemini-skill](https://github.com/pcx-wave/gemini-skill).
-Both write to the same `delegate-runs.jsonl` log, making runs comparable across delegates.
+- Codex orchestrator support: see `CODEX-SKILL.md`
+- Pre-built delegation chains: `.delegate/chains/implement.yaml`, `.delegate/chains/bugfix.yaml`
+- A sister delegate using Gemini CLI exists: [gemini-skill](https://github.com/pcx-wave/gemini-skill).
+  Both write to the same `delegate-runs.jsonl` log, making runs comparable across delegates.

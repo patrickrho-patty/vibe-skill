@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# adapters/vibe — Vibe-specific adapter for tools/delegate
+# Usage: adapters/vibe <workdir> <prompt_file> <max_turns> <agent> <timeout_secs> <stats_file>
+#
+# ROOT CAUSE FIX (2026-05-10):
+#   vibe checks for a TTY on startup. Without one (e.g. when piped directly),
+#   it hangs indefinitely waiting for terminal initialisation → 0 tool calls,
+#   silent timeout. Fix: wrap vibe in `script -q -c "..." /dev/null` to allocate
+#   a pseudo-TTY. The JSON streaming output is then piped cleanly to the parser.
+
+WORKDIR="${1:?Usage: adapters/vibe <workdir> <prompt_file> <max_turns> <agent> <timeout_secs> <stats_file>}"
+PROMPT_FILE="${2:?Prompt file required}"
+MAX_TURNS="${3:-10}"
+AGENT="${4:-}"
+TIMEOUT_SECS="${5:-180}"
+STATS_FILE="${6:?Stats file required}"
+
+# Write the vibe command to a temp script.
+# Reads the prompt from the file to stay safe from shell expansion.
+VIBE_SCRIPT=$(mktemp /tmp/vibe-cmd-XXXXXX.sh)
+trap 'rm -f "$VIBE_SCRIPT"' EXIT
+
+{
+  echo '#!/usr/bin/env bash'
+  echo "PROMPT_CONTENT=$(printf '%q' "$(cat "$PROMPT_FILE")")"
+  if [ -n "$AGENT" ]; then
+    printf 'exec vibe --agent %q -p "$PROMPT_CONTENT" --trust --max-turns %q --output streaming --workdir %q\n' \
+      "$AGENT" "$MAX_TURNS" "$WORKDIR"
+  else
+    printf 'exec vibe -p "$PROMPT_CONTENT" --trust --max-turns %q --output streaming --workdir %q\n' \
+      "$MAX_TURNS" "$WORKDIR"
+  fi
+} > "$VIBE_SCRIPT"
+chmod +x "$VIBE_SCRIPT"
+
+# Run vibe inside `script` to give it a pseudo-TTY (required — vibe hangs without one).
+# GNU/Linux uses: script -q -c "cmd" /dev/null
+# macOS (BSD) uses: script -q /dev/null "cmd"
+if [[ "$(uname)" == "Darwin" ]]; then
+  SCRIPT_CMD=(script -q /dev/null "$VIBE_SCRIPT")
+else
+  SCRIPT_CMD=(script -q -c "$VIBE_SCRIPT" /dev/null)
+fi
+
+export DELEGATE_STATS_FILE="$STATS_FILE"
+
+timeout "$TIMEOUT_SECS" "${SCRIPT_CMD[@]}" | python3 -c "
+import sys, json, re, os, datetime
+
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfhilmnprsu]|\x1b\([AB]|\x0f|\x0e')
+tools_called = 0
+warn_count = 0
+sr_fails = 0
+writes = []
+
+# Session recording (F16)
+session_dir = os.path.expanduser('~/.local/share/delegate-sessions')
+os.makedirs(session_dir, exist_ok=True)
+session_file = os.path.join(
+    session_dir,
+    datetime.datetime.utcnow().strftime('%Y-%m-%dT%H-%M-%SZ') + '.jsonl'
+)
+sf = open(session_file, 'w')
+
+def clean(line):
+    line = line.replace('\r', '')
+    return ANSI_RE.sub('', line).strip()
+
+for raw in sys.stdin:
+    line = clean(raw)
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    # Record raw event to session file
+    sf.write(json.dumps(msg) + '\n')
+
+    role    = msg.get('role', '')
+    content = msg.get('content', '') or ''
+
+    if role in ('system', 'user'):
+        continue
+
+    if role == 'assistant':
+        text = content.strip()
+        if not text:
+            continue
+        print(f'  [vibe] {text[:400]}', flush=True)
+
+    elif role == 'tool':
+        tools_called += 1
+        first_line = content.split('\n')[0] if content else ''
+        tool_name  = msg.get('tool', '') or msg.get('name', '')
+
+        # Detect writes to track files for syntax check
+        if 'write' in tool_name.lower() or 'edit' in tool_name.lower():
+            filepath = msg.get('path') or msg.get('file_path') or ''
+            if filepath:
+                writes.append(filepath)
+            print(f'  [tool]  file: {filepath or first_line[:80]}', flush=True)
+        elif first_line.startswith('path:'):
+            print(f'  [read]  {first_line[5:].strip()}', flush=True)
+        elif 'search_replace' in tool_name.lower() or 'SEARCH' in content:
+            status = 'FAIL' if 'failed' in content.lower() else 'OK'
+            if status == 'FAIL':
+                sr_fails += 1
+            print(f'  [tool]  search_replace [{status}] {first_line[:80]}', flush=True)
+        elif first_line.startswith('error') or 'Error' in first_line or 'failed' in first_line.lower():
+            warn_count += 1
+            print(f'  [WARN]  {first_line[:120]}', flush=True)
+        elif 'matches:' in first_line or 'grep' in tool_name.lower():
+            print(f'  [tool]  matches: {first_line[:100]}', flush=True)
+        elif 'command' in tool_name.lower():
+            print(f'  [tool]  command: {first_line[:100]}', flush=True)
+        else:
+            snippet = (first_line or content)[:100]
+            print(f'  [tool]  {snippet}', flush=True)
+
+sf.close()
+print(f'Tool calls: {tools_called}  |  warns: {warn_count}  |  sr_fails: {sr_fails}')
+print(f'Session recorded: {session_file}')
+
+# Write partial stats so the token block can merge into it.
+_sf = os.environ.get('DELEGATE_STATS_FILE', '')
+if _sf:
+    try:
+        with open(_sf, 'w') as _f:
+            json.dump({
+                'tool_calls': tools_called,
+                'warn_count': warn_count,
+                'search_replace_fails': sr_fails,
+                'session_file': session_file,
+            }, _f)
+    except Exception:
+        pass
+"
+VIBE_EXIT=${PIPESTATUS[0]}
+
+# ── Real Mistral token counts from session log ─────────────────────────────────
+VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
+SESSION_LOG=$(ls -t "$VIBE_HOME/logs/session"/*/meta.json 2>/dev/null | head -1)
+if [ -n "$SESSION_LOG" ]; then
+  python3 -c "
+import json, sys, os
+try:
+    with open('$SESSION_LOG') as f:
+        data = json.load(f)
+    stats = data.get('stats', {})
+    prompt = stats.get('last_turn_prompt_tokens', 0)
+    completion = stats.get('last_turn_completion_tokens', 0)
+    total = stats.get('last_turn_total_tokens', prompt + completion)
+    cost = stats.get('session_cost', 0)
+    session_total = stats.get('session_total_llm_tokens', 0)
+    model_name = data.get('config', {}).get('active_model', 'unknown')
+
+    # Read per-model pricing from ~/.vibe/config.toml (fallback: Mistral Medium 3.5 rates)
+    input_price, output_price = 1.5, 7.5
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            tomllib = None
+    if tomllib:
+        config_path = os.path.expanduser('~/.vibe/config.toml')
+        try:
+            with open(config_path, 'rb') as cf:
+                cfg = tomllib.load(cf)
+            active = model_name  # use session's actual model, not config default
+            for m in cfg.get('models', []):
+                if m.get('alias') == active or m.get('name') == active:
+                    input_price = m.get('input_price', input_price)
+                    output_price = m.get('output_price', output_price)
+                    break
+        except Exception:
+            pass
+
+    # Each -p invocation creates a new session, so session_total_llm_tokens is
+    # the full run total. last_turn_* covers only the final exchange — wrong for
+    # multi-turn runs (e.g. 10 turns × 8 reads each = ~10× undercount).
+    run_total = session_total if session_total > 0 else total
+    if (prompt + completion) > 0 and run_total > 0:
+        ratio_in = prompt / (prompt + completion)
+        run_tokens_in  = round(run_total * ratio_in)
+        run_tokens_out = run_total - run_tokens_in
+    else:
+        run_tokens_in, run_tokens_out = prompt, completion
+    run_cost = (run_tokens_in * input_price + run_tokens_out * output_price) / 1_000_000
+    claude_cost = (run_tokens_in * 3.0 + run_tokens_out * 15.0) / 1_000_000
+    print(f'Model               : {model_name}')
+    print(f'Delegate tokens (run): {run_total:,}  (last turn: {prompt:,}+{completion:,})  |  cost ~\${run_cost:.4f}')
+    print(f'Claude Sonnet 4.6 eq: same tokens would cost ~\${claude_cost:.4f}  (ratio x{claude_cost/run_cost:.1f})' if run_cost > 0 else f'Claude Sonnet 4.6 eq: ~\${claude_cost:.4f}')
+    # Merge token stats into the delegate stats file.
+    sf = os.environ.get('DELEGATE_STATS_FILE', '')
+    if sf:
+        try:
+            existing = json.load(open(sf))
+        except Exception:
+            existing = {}
+        existing.update({
+            'tokens_in':    run_tokens_in,
+            'tokens_out':   run_tokens_out,
+            'tokens_total': run_total,
+            'cost_usd':     round(run_cost, 6),
+            'model':        model_name,
+        })
+        with open(sf, 'w') as wf:
+            json.dump(existing, wf)
+except Exception as e:
+    print(f'(token read failed: {e})')
+" 2>/dev/null
+fi
+
+exit $VIBE_EXIT

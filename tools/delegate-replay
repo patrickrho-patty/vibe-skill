@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+delegate-replay — replay a recorded delegation session step-by-step
+Usage: delegate-replay <session-file> [--turn N] [--errors]
+
+Arguments:
+  session-file   Path to a .jsonl session file (from ~/.local/share/delegate-sessions/).
+  --turn N       Show only events from turn N.
+  --errors       Show only error-related events and turns.
+"""
+import sys
+import json
+import re
+import os
+
+
+def replay(session_file: str, target_turn: int = 0, errors_only: bool = False):
+    with open(session_file) as f:
+        events = [json.loads(line) for line in f if line.strip()]
+
+    if not events:
+        print("Empty session file")
+        return
+
+    turn = 0
+    print(f"=== REPLAY: {session_file} ({len(events)} events) ===\n")
+
+    for msg in events:
+        role = msg.get('role', '')
+        content = msg.get('content', '') or ''
+        tool_name = msg.get('tool', '') or msg.get('name', '')
+
+        if role == 'assistant':
+            turn += 1
+            if target_turn and turn != target_turn:
+                continue
+            text = content.strip()
+            if not text:
+                continue
+            if errors_only and 'error' not in text.lower() and 'fail' not in text.lower():
+                continue
+            print(f"Turn {turn}:")
+            print(f"  [think] {text[:300]}")
+            print()
+
+        elif role == 'tool':
+            if target_turn and turn != target_turn:
+                continue
+
+            first_line = content.split('\n')[0] if content else ''
+
+            # Determine action type
+            if 'write' in tool_name.lower() or 'edit' in tool_name.lower():
+                filepath = msg.get('path') or msg.get('file_path') or ''
+                if errors_only and 'error' not in content.lower() and 'fail' not in content.lower():
+                    continue
+                print(f"  [edit]  {filepath}")
+                # Show diff-like content
+                lines = content.splitlines()
+                for line in lines[:15]:
+                    if line.startswith('+') or line.startswith('-'):
+                        print(f"          {line}")
+                if len(lines) > 15:
+                    print(f"          ... ({len(lines) - 15} more lines)")
+                print()
+
+            elif 'search_replace' in tool_name.lower():
+                status = 'FAIL' if 'failed' in content.lower() else 'OK'
+                if errors_only and status == 'OK':
+                    continue
+                print(f"  [edit]  search_replace [{status}]")
+                # Show old/new if available
+                old_match = re.search(r'old_string["\s:]+(.+?)(?:new_string|$)', content, re.S)
+                new_match = re.search(r'new_string["\s:]+(.+?)$', content, re.S)
+                if old_match:
+                    for line in old_match.group(1).strip().splitlines()[:5]:
+                        print(f"          - {line}")
+                if new_match:
+                    for line in new_match.group(1).strip().splitlines()[:5]:
+                        print(f"          + {line}")
+                print()
+
+            elif first_line.startswith('path:') or 'read' in tool_name.lower():
+                if errors_only:
+                    continue
+                filepath = first_line[5:].strip() if first_line.startswith('path:') else first_line[:80]
+                # Show what was read
+                lines = content.splitlines()
+                print(f"  [read]  {filepath}")
+                for line in lines[1:8]:  # Show first few lines of content
+                    print(f"          | {line}")
+                if len(lines) > 8:
+                    print(f"          | ... ({len(lines) - 8} more lines)")
+                print()
+
+            elif first_line.startswith('error') or 'Error' in first_line:
+                print(f"  [ERROR] {first_line[:120]}")
+                print()
+
+            else:
+                if errors_only:
+                    continue
+                print(f"  [tool]  {tool_name}: {first_line[:100]}")
+                print()
+
+    print(f"=== END REPLAY ({turn} turns) ===")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+    session_file = sys.argv[1]
+    target_turn = 0
+    errors_only = False
+
+    args = sys.argv[2:]
+    i = 0
+    while i < len(args):
+        if args[i] == '--turn' and i + 1 < len(args):
+            target_turn = int(args[i + 1])
+            i += 2
+        elif args[i] == '--errors':
+            errors_only = True
+            i += 1
+        else:
+            i += 1
+
+    if not os.path.exists(session_file):
+        print(f"Session file not found: {session_file}", file=sys.stderr)
+        sys.exit(1)
+
+    replay(session_file, target_turn, errors_only)
+
+
+if __name__ == '__main__':
+    main()

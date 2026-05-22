@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# delegate-reject — write a correction prompt for the next delegate run
+# Usage: delegate-reject <workdir> <correction-prompt>
+#
+# The orchestrator calls this to reject a delegation result and provide
+# correction instructions. The delegate script picks up the correction
+# file on the next run.
+
+WORKDIR="${1:?Usage: delegate-reject <workdir> <correction-prompt>}"
+CORRECTION="${2:?Correction prompt required}"
+
+DELEGATE_DIR="$WORKDIR/.delegate"
+mkdir -p "$DELEGATE_DIR"
+
+printf '%s' "$CORRECTION" > "$DELEGATE_DIR/correction-prompt.txt"
+echo "[reject] Correction prompt written — will be applied on next delegate run"
+echo "[reject] Prompt: ${CORRECTION:0:120}..."

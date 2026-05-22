@@ -1,0 +1,677 @@
+#!/usr/bin/env python3
+"""
+delegate-distill — analyze a project and write .delegate/project-brief.md
+Usage: delegate-distill [project-dir]
+"""
+
+import os
+import sys
+import re
+import json
+import hashlib
+import datetime
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    try:
+        h.update(path.read_bytes())
+    except Exception:
+        h.update(b"")
+    return h.hexdigest()[:16]
+
+
+def sha256_str(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
+
+
+def read_text(path: Path, max_bytes: int = 65536) -> str:
+    try:
+        data = path.read_bytes()[:max_bytes]
+        return data.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def find_files(root: Path, pattern: str, max_depth: int = 5) -> list[Path]:
+    """Glob-style find respecting max depth; skip .delegate, node_modules, .git, venv, __pycache__."""
+    skip = {".git", "node_modules", ".delegate", "venv", ".venv", "__pycache__", ".tox", "dist", "build", "worktrees"}
+    result = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = len(Path(dirpath).relative_to(root).parts)
+        if depth >= max_depth:
+            dirnames.clear()
+            continue
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for f in filenames:
+            p = Path(dirpath) / f
+            if p.match(pattern):
+                result.append(p)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Stack detection
+# ---------------------------------------------------------------------------
+
+def detect_stack(root: Path) -> dict:
+    stacks = []
+    package_manager = None
+    manifest_file = None
+    language = None
+    language_version = None
+    framework = None
+    entry_point = None
+
+    # Node.js
+    pkg = root / "package.json"
+    if pkg.exists():
+        raw = read_text(pkg)
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {}
+        deps = {}
+        deps.update(data.get("dependencies", {}))
+        deps.update(data.get("devDependencies", {}))
+        node_version = data.get("engines", {}).get("node", "")
+        fw = "Node.js"
+        if "next" in deps:
+            fw = "Next.js"
+        elif "react" in deps:
+            fw = "React"
+        elif "vue" in deps:
+            fw = "Vue"
+        elif "express" in deps:
+            fw = "Express"
+        elif "fastify" in deps:
+            fw = "Fastify"
+        elif "nuxt" in deps:
+            fw = "Nuxt"
+        lang = "TypeScript" if (root / "tsconfig.json").exists() else "JavaScript"
+        pm = "yarn" if (root / "yarn.lock").exists() else ("pnpm" if (root / "pnpm-lock.yaml").exists() else "npm")
+        stacks.append({
+            "framework": fw, "language": lang,
+            "language_version": node_version,
+            "package_manager": pm, "manifest_file": "package.json"
+        })
+
+    # Python
+    py_manifests = ["requirements.txt", "pyproject.toml", "setup.py", "Pipfile"]
+    for pm_file in py_manifests:
+        if (root / pm_file).exists():
+            raw = read_text(root / pm_file)
+            fw = "Python"
+            if "flask" in raw.lower():
+                fw = "Flask"
+            elif "django" in raw.lower():
+                fw = "Django"
+            elif "fastapi" in raw.lower():
+                fw = "FastAPI"
+            stacks.append({
+                "framework": fw, "language": "Python",
+                "language_version": "",
+                "package_manager": "pip", "manifest_file": pm_file
+            })
+            break
+
+    # Go
+    if (root / "go.mod").exists():
+        raw = read_text(root / "go.mod")
+        ver_m = re.search(r"^go\s+([\d.]+)", raw, re.M)
+        stacks.append({
+            "framework": "Go", "language": "Go",
+            "language_version": ver_m.group(1) if ver_m else "",
+            "package_manager": "go mod", "manifest_file": "go.mod"
+        })
+
+    # Rust
+    if (root / "Cargo.toml").exists():
+        stacks.append({
+            "framework": "Rust", "language": "Rust",
+            "language_version": "",
+            "package_manager": "cargo", "manifest_file": "Cargo.toml"
+        })
+
+    # Ruby
+    if (root / "Gemfile").exists():
+        raw = read_text(root / "Gemfile")
+        fw = "Ruby"
+        if "rails" in raw.lower():
+            fw = "Rails"
+        elif "sinatra" in raw.lower():
+            fw = "Sinatra"
+        stacks.append({
+            "framework": fw, "language": "Ruby",
+            "language_version": "",
+            "package_manager": "bundler", "manifest_file": "Gemfile"
+        })
+
+    # PHP
+    if (root / "composer.json").exists():
+        stacks.append({
+            "framework": "PHP", "language": "PHP",
+            "language_version": "",
+            "package_manager": "composer", "manifest_file": "composer.json"
+        })
+
+    # Java
+    if (root / "pom.xml").exists():
+        stacks.append({
+            "framework": "Java/Maven", "language": "Java",
+            "language_version": "",
+            "package_manager": "maven", "manifest_file": "pom.xml"
+        })
+    elif (root / "build.gradle").exists() or (root / "build.gradle.kts").exists():
+        stacks.append({
+            "framework": "Java/Gradle", "language": "Java",
+            "language_version": "",
+            "package_manager": "gradle", "manifest_file": "build.gradle"
+        })
+
+    # Shell / bash project (fallback) — walk top 2 dirs to count extensions
+    if not stacks:
+        exts: dict[str, int] = {}
+        skip_dirs = {".git", "node_modules", ".delegate", "venv", ".venv",
+                     "__pycache__", "dist", "build", "worktrees"}
+        for dirpath, dirnames, filenames in os.walk(root):
+            depth = len(Path(dirpath).relative_to(root).parts)
+            if depth >= 2:
+                dirnames.clear()
+                continue
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            for fname in filenames:
+                p = Path(dirpath) / fname
+                # Check shebang for files without extension
+                ext = p.suffix.lower()
+                if not ext:
+                    try:
+                        first = p.read_bytes()[:128].decode("utf-8", errors="replace")
+                        if "bash" in first or "sh" in first:
+                            ext = ".sh"
+                        elif "python" in first:
+                            ext = ".py"
+                    except Exception:
+                        pass
+                if ext:
+                    exts[ext] = exts.get(ext, 0) + 1
+        most = max(exts, key=exts.get, default="")
+        lang_map = {".sh": "Bash", ".py": "Python", ".js": "JavaScript",
+                    ".ts": "TypeScript", ".go": "Go", ".rb": "Ruby",
+                    ".md": "Markdown/Docs"}
+        lang = lang_map.get(most, "Bash/Shell")
+        stacks.append({
+            "framework": lang, "language": lang,
+            "language_version": "", "package_manager": "", "manifest_file": ""
+        })
+
+    return stacks
+
+
+# ---------------------------------------------------------------------------
+# Key files
+# ---------------------------------------------------------------------------
+
+ENTRY_NAMES = [
+    "main.py", "app.py", "index.js", "index.ts", "main.go", "main.rs",
+    "server.py", "server.js", "server.ts", "manage.py", "cli.py",
+    "app.js", "app.ts", "run.py", "wsgi.py", "asgi.py",
+]
+
+INTEREST_PATTERNS = [
+    (re.compile(r"(model|schema|entity)", re.I), "model/schema"),
+    (re.compile(r"(route|controller|handler|view)", re.I), "route/handler"),
+    (re.compile(r"(test_|_test\.|\.test\.|\.spec\.)", re.I), "test"),
+    (re.compile(r"(config|settings|env\.example)", re.I), "config"),
+    (re.compile(r"(util|helper|common|shared)", re.I), "util/helper"),
+    (re.compile(r"(db|database|migration|migrate)", re.I), "db/migration"),
+    (re.compile(r"(auth|login|token|session)", re.I), "auth"),
+    (re.compile(r"(api|client|service)", re.I), "api/service"),
+]
+
+
+def describe_file(path: Path, root: Path) -> str:
+    """Return a short description based on file name/path patterns."""
+    name = path.name
+    for pat, label in INTEREST_PATTERNS:
+        if pat.search(str(path.relative_to(root))):
+            return label
+    # Fallback: extension
+    ext_map = {
+        ".py": "Python module", ".js": "JS module", ".ts": "TS module",
+        ".go": "Go package", ".rs": "Rust module", ".rb": "Ruby module",
+        ".sh": "shell script", ".md": "documentation",
+        ".json": "JSON config", ".toml": "TOML config", ".yaml": "YAML config",
+        ".yml": "YAML config",
+    }
+    return ext_map.get(path.suffix.lower(), "source file")
+
+
+def identify_key_files(root: Path) -> list[tuple[str, str]]:
+    results = []
+    seen = set()
+
+    # Entry points first
+    for name in ENTRY_NAMES:
+        p = root / name
+        if p.exists() and str(p) not in seen:
+            seen.add(str(p))
+            results.append((str(p.relative_to(root)), "entry point — " + name))
+
+    # Walk and score
+    skip = {".git", "node_modules", ".delegate", "venv", ".venv",
+            "__pycache__", "dist", "build", ".tox", "worktrees"}
+    candidates = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = len(Path(dirpath).relative_to(root).parts)
+        if depth >= 5:
+            dirnames.clear()
+            continue
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fname in filenames:
+            p = Path(dirpath) / fname
+            if str(p) in seen:
+                continue
+            rel = str(p.relative_to(root))
+            # Include all scripts in tools/ or bin/ dirs as interesting
+            parent = Path(dirpath).name
+            if parent in ("tools", "bin", "scripts") and p.suffix in ("", ".sh", ".py", ".js", ".ts"):
+                candidates.append((rel, "tool/script", depth))
+                continue
+            for pat, label in INTEREST_PATTERNS:
+                if pat.search(rel):
+                    candidates.append((rel, label, depth))
+                    break
+
+    # Sort: shallower + interesting first
+    candidates.sort(key=lambda x: (x[2], x[0]))
+    for rel, label, _ in candidates:
+        if str(root / rel) not in seen and len(results) < 15:
+            seen.add(str(root / rel))
+            results.append((rel, label))
+
+    return results[:15]
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+def extract_models(root: Path, stacks: list[dict]) -> list[str]:
+    languages = {s["language"] for s in stacks}
+    models = []
+    seen_models = set()
+
+    def scan_python(path: Path):
+        text = read_text(path)
+        # class Foo(Model), class Foo(Base), @dataclass, TypedDict
+        for m in re.finditer(
+            r"^class\s+(\w+)\s*\([^)]*(?:Model|Base|TypedDict)[^)]*\)|"
+            r"^@dataclass\s*\nclass\s+(\w+)|"
+            r"^class\s+(\w+)\s*\(TypedDict\)",
+            text, re.M
+        ):
+            name = m.group(1) or m.group(2) or m.group(3)
+            if name and name not in seen_models:
+                seen_models.add(name)
+                # Extract fields: lines with `field: type` after class
+                start = m.start()
+                block = text[start:start + 1500]
+                fields = re.findall(r"^\s{4}(\w+)\s*[=:]", block, re.M)
+                fields = [f for f in fields if not f.startswith("__")][:8]
+                models.append(f"{name}: {', '.join(fields)}" if fields else name)
+
+    def scan_js_ts(path: Path):
+        text = read_text(path)
+        # interface Foo { ... }
+        for m in re.finditer(r"(?:interface|type)\s+(\w+)\s*[={]([^}]{0,400})", text):
+            name = m.group(1)
+            if name in ("FC", "ReactNode", "ReactElement", "CSSProperties"):
+                continue
+            if name not in seen_models:
+                seen_models.add(name)
+                fields = re.findall(r"(\w+)\s*[?:]?\s*:", m.group(2))[:8]
+                models.append(f"{name}: {', '.join(fields)}" if fields else name)
+        # class Foo extends ...
+        for m in re.finditer(r"class\s+(\w+)\s+extends\s+\w+", text):
+            name = m.group(1)
+            if name not in seen_models:
+                seen_models.add(name)
+                models.append(name)
+
+    skip = {".git", "node_modules", ".delegate", "venv", ".venv",
+            "__pycache__", "dist", "build", ".tox", "worktrees"}
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = len(Path(dirpath).relative_to(root).parts)
+        if depth >= 5:
+            dirnames.clear()
+            continue
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fname in filenames:
+            p = Path(dirpath) / fname
+            rel = str(p.relative_to(root))
+            # Only scan model/schema files first, then any Python/TS file
+            is_model_file = bool(re.search(r"(model|schema|entity)", rel, re.I))
+            if "Python" in languages and p.suffix == ".py":
+                if is_model_file or len(models) < 20:
+                    scan_python(p)
+            if ("JavaScript" in languages or "TypeScript" in languages) and p.suffix in (".ts", ".tsx", ".js", ".jsx"):
+                if is_model_file or len(models) < 20:
+                    scan_js_ts(p)
+            if len(models) >= 20:
+                break
+
+    return models[:15]
+
+
+# ---------------------------------------------------------------------------
+# Conventions
+# ---------------------------------------------------------------------------
+
+def detect_conventions(root: Path, stacks: list[dict]) -> dict:
+    languages = {s["language"] for s in stacks}
+    naming = "unknown"
+    structure = "flat"
+    linting = []
+
+    # Naming: sample function names
+    func_names = []
+    skip = {".git", "node_modules", ".delegate", "venv", ".venv", "__pycache__", "dist", "build", "worktrees"}
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = len(Path(dirpath).relative_to(root).parts)
+        if depth >= 3:
+            dirnames.clear()
+            continue
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fname in filenames:
+            p = Path(dirpath) / fname
+            if p.suffix in (".py", ".js", ".ts", ".go"):
+                text = read_text(p, 8192)
+                found = re.findall(r"def (\w+)\(|function (\w+)\(|const (\w+)\s*=\s*(?:async\s*)?\(|func (\w+)\(", text)
+                for groups in found:
+                    name = next((g for g in groups if g), None)
+                    if name and not name.startswith("_"):
+                        func_names.append(name)
+                if len(func_names) >= 10:
+                    break
+        if len(func_names) >= 10:
+            break
+
+    if func_names:
+        snake = sum(1 for n in func_names[:10] if "_" in n)
+        camel = sum(1 for n in func_names[:10] if re.search(r"[a-z][A-Z]", n))
+        if snake > camel:
+            naming = "snake_case"
+        elif camel > snake:
+            naming = "camelCase"
+        else:
+            naming = "mixed"
+
+    # Structure
+    src_dirs = ["src", "lib", "app", "pkg", "cmd"]
+    if any((root / d).is_dir() for d in src_dirs):
+        structure = "nested (src/)"
+    else:
+        structure = "flat"
+
+    # Linting
+    lint_checks = [
+        (".eslintrc", "ESLint"), (".eslintrc.json", "ESLint"), (".eslintrc.js", "ESLint"),
+        (".eslintrc.yml", "ESLint"), (".flake8", "flake8"), (".pylintrc", "pylint"),
+        ("biome.json", "Biome"), (".prettierrc", "Prettier"),
+    ]
+    for fname, tool in lint_checks:
+        if (root / fname).exists():
+            linting.append(f"{tool} ({fname})")
+    # pyproject.toml ruff
+    pt = root / "pyproject.toml"
+    if pt.exists():
+        text = read_text(pt)
+        if "[tool.ruff]" in text:
+            linting.append("ruff (pyproject.toml)")
+        if "[tool.black]" in text:
+            linting.append("black (pyproject.toml)")
+
+    return {
+        "naming": naming,
+        "structure": structure,
+        "linting": ", ".join(linting) if linting else "none detected",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Gotchas
+# ---------------------------------------------------------------------------
+
+def detect_gotchas(root: Path, stacks: list[dict]) -> list[str]:
+    gotchas = []
+    languages = {s["language"] for s in stacks}
+
+    # Mixed tabs/spaces in Python
+    if "Python" in languages:
+        py_files = list(find_files(root, "*.py"))[:20]
+        tab_count = space_count = 0
+        for p in py_files:
+            text = read_text(p, 4096)
+            for line in text.splitlines():
+                if line.startswith("\t"):
+                    tab_count += 1
+                elif line.startswith("    "):
+                    space_count += 1
+        if tab_count > 0 and space_count > 0:
+            gotchas.append("mixed tabs/spaces in Python files")
+        # No type hints
+        all_py = read_text(py_files[0] if py_files else Path("/dev/null"), 4096) if py_files else ""
+        if py_files and "->" not in all_py and ":" not in all_py[all_py.find("def "):all_py.find("def ") + 100]:
+            gotchas.append("no type hints detected in Python code")
+
+    # No tests
+    test_files = (
+        find_files(root, "test_*.py") +
+        find_files(root, "*.test.js") +
+        find_files(root, "*.test.ts") +
+        find_files(root, "*.spec.ts") +
+        find_files(root, "*.spec.js")
+    )
+    if not test_files:
+        gotchas.append("no test files detected")
+
+    # Env file missing but .env.example present
+    if (root / ".env.example").exists() and not (root / ".env").exists():
+        gotchas.append(".env.example present but no .env (copy and configure)")
+
+    # Large number of top-level files
+    top_files = [f for f in root.iterdir() if f.is_file()]
+    if len(top_files) > 20:
+        gotchas.append(f"many top-level files ({len(top_files)}) — consider src/ layout")
+
+    return gotchas
+
+
+# ---------------------------------------------------------------------------
+# Hash section
+# ---------------------------------------------------------------------------
+
+def compute_hashes(root: Path, stacks: list[dict]) -> dict:
+    hashes = {}
+
+    # Manifest files
+    for s in stacks:
+        mf = s.get("manifest_file")
+        if mf and (root / mf).exists():
+            hashes["manifest"] = sha256_file(root / mf)
+            break
+
+    # Entry point
+    for name in ENTRY_NAMES:
+        p = root / name
+        if p.exists():
+            hashes["entry"] = sha256_file(p)
+            break
+
+    # Model files (first found)
+    skip = {".git", "node_modules", ".delegate", "venv", ".venv", "__pycache__", "worktrees"}
+    model_files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = len(Path(dirpath).relative_to(root).parts)
+        if depth >= 4:
+            dirnames.clear()
+            continue
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fname in filenames:
+            if re.search(r"(model|schema|entity)", fname, re.I):
+                model_files.append(Path(dirpath) / fname)
+    if model_files:
+        model_hash_input = "".join(sha256_file(p) for p in sorted(model_files))
+        hashes["models"] = sha256_str(model_hash_input)
+
+    return hashes
+
+
+def parse_existing_hashes(brief_text: str) -> dict:
+    m = re.search(r"<!-- _hashes:\n(.*?)-->", brief_text, re.S)
+    if not m:
+        return {}
+    hashes = {}
+    for line in m.group(1).strip().splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            hashes[k.strip()] = v.strip()
+    return hashes
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    if len(sys.argv) > 1:
+        root = Path(sys.argv[1]).resolve()
+    else:
+        root = Path.cwd()
+
+    if not root.is_dir():
+        print(f"Error: {root} is not a directory", file=sys.stderr)
+        sys.exit(1)
+
+    project_name = root.name
+    delegate_dir = root / ".delegate"
+    brief_path = delegate_dir / "project-brief.md"
+
+    # Compute current hashes
+    stacks = detect_stack(root)
+    current_hashes = compute_hashes(root, stacks)
+
+    # Check existing brief
+    if brief_path.exists():
+        existing = read_text(brief_path)
+        old_hashes = parse_existing_hashes(existing)
+        if old_hashes == current_hashes and current_hashes:
+            print("Brief is current, no changes")
+            sys.exit(0)
+
+    # Build brief
+    key_files = identify_key_files(root)
+    models = extract_models(root, stacks)
+    conventions = detect_conventions(root, stacks)
+    gotchas = detect_gotchas(root, stacks)
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Stack line
+    stack_lines = []
+    for s in stacks:
+        parts = [s["framework"]]
+        if s.get("language_version"):
+            parts.append(s["language_version"])
+        if s["framework"] != s["language"]:
+            parts.append(f"({s['language']})")
+        stack_lines.append(" ".join(parts))
+
+    # Entry point
+    entry_display = "unknown"
+    for name in ENTRY_NAMES:
+        if (root / name).exists():
+            entry_display = name
+            break
+
+    # Package manager
+    pm_display = ""
+    if stacks:
+        pm_parts = []
+        for s in stacks:
+            if s.get("package_manager"):
+                pm_parts.append(f"{s['package_manager']} ({s['manifest_file']})")
+        pm_display = "; ".join(pm_parts)
+
+    lines = [
+        f"# Project Brief — {project_name}",
+        f"# Generated: {timestamp} | Regenerate: delegate-distill {root}",
+        "",
+        "## Stack",
+        ", ".join(stack_lines) if stack_lines else "Unknown",
+        f"Entry: {entry_display}",
+    ]
+    if pm_display:
+        lines.append(f"Package: {pm_display}")
+
+    lines += ["", "## Key Files"]
+    if key_files:
+        for rel, desc in key_files:
+            lines.append(f"- {rel} — {desc}")
+    else:
+        lines.append("- (no notable files detected)")
+
+    lines += ["", "## Data Models"]
+    if models:
+        for m in models:
+            lines.append(f"- {m}")
+    else:
+        lines.append("- (none detected)")
+
+    lines += [
+        "",
+        "## Conventions",
+        f"- Naming: {conventions['naming']}",
+        f"- Structure: {conventions['structure']}",
+        f"- Linting: {conventions['linting']}",
+    ]
+
+    lines += ["", "## Gotchas"]
+    if gotchas:
+        for g in gotchas:
+            lines.append(f"- {g}")
+    else:
+        lines.append("- (none detected)")
+
+    # Hash section
+    hash_lines = "\n".join(f"{k}:{v}" for k, v in sorted(current_hashes.items()))
+    lines += [
+        "",
+        f"<!-- _hashes:\n{hash_lines}\n-->",
+    ]
+
+    brief_text = "\n".join(lines) + "\n"
+
+    # Write
+    delegate_dir.mkdir(exist_ok=True)
+    brief_path.write_text(brief_text)
+
+    # Update .gitignore
+    gitignore = root / ".gitignore"
+    if gitignore.exists():
+        gi_text = gitignore.read_text()
+        if ".delegate/" not in gi_text and ".delegate" not in gi_text:
+            gitignore.write_text(gi_text.rstrip() + "\n.delegate/\n")
+            print("Updated .gitignore to include .delegate/")
+
+    print(f"Brief written to {brief_path}")
+
+
+if __name__ == "__main__":
+    main()

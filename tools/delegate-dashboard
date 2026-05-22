@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""
+delegate-dashboard — live delegation dashboard
+Usage: delegate-dashboard [--refresh SECS] [--project NAME]
+"""
+import sys, os, json
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+
+LOG = Path.home() / '.local' / 'share' / 'delegate-runs.jsonl'
+
+
+def load_runs(project_filter: str = '') -> list:
+    if not LOG.exists():
+        return []
+    entries = []
+    for line in LOG.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            if project_filter and entry.get('project') != project_filter:
+                continue
+            entries.append(entry)
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def format_cost(cost: float) -> str:
+    if cost < 0.01:
+        return f"${cost:.4f}"
+    return f"${cost:.2f}"
+
+
+def plain_dashboard(runs: list):
+    """Plain text dashboard fallback."""
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    print("=" * 60)
+    print("  DELEGATE DASHBOARD")
+    print(f"  {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print("=" * 60)
+
+    if not runs:
+        print("\n  No runs recorded yet.\n")
+        return
+
+    # Summary
+    total = len(runs)
+    successes = sum(1 for r in runs if r.get('exit_code', 1) == 0)
+    total_cost = sum(r.get('cost_usd', 0) for r in runs)
+    total_claude_eq = sum(r.get('cost_claude_eq', 0) for r in runs)
+    total_saved = total_claude_eq - total_cost
+
+    print(f"\n  SUMMARY")
+    print(f"  Total runs:        {total}")
+    print(f"  Success rate:      {successes/total*100:.0f}%")
+    print(f"  Total cost:        {format_cost(total_cost)}")
+    print(f"  Claude equivalent: {format_cost(total_claude_eq)}")
+    print(f"  Total saved:       {format_cost(total_saved)}")
+
+    # Today
+    today_runs = [r for r in runs if r.get('ts', '')[:10] == str(today)]
+    if today_runs:
+        today_cost = sum(r.get('cost_usd', 0) for r in today_runs)
+        today_eq = sum(r.get('cost_claude_eq', 0) for r in today_runs)
+        print(f"\n  TODAY")
+        print(f"  Runs:  {len(today_runs)}")
+        print(f"  Cost:  {format_cost(today_cost)}")
+        print(f"  Saved: {format_cost(today_eq - today_cost)}")
+
+    # Per harness
+    harnesses = defaultdict(list)
+    for r in runs:
+        harnesses[r.get('harness', 'unknown')].append(r)
+
+    print(f"\n  PER HARNESS")
+    print(f"  {'Harness':<14} {'Runs':>6} {'OK%':>6} {'Avg Cost':>10} {'Avg Dur':>8}")
+    print(f"  {'-'*14} {'-'*6} {'-'*6} {'-'*10} {'-'*8}")
+    for h, hrs in sorted(harnesses.items()):
+        ok = sum(1 for r in hrs if r.get('exit_code', 1) == 0)
+        avg_cost = sum(r.get('cost_usd', 0) for r in hrs) / len(hrs)
+        avg_dur = sum(r.get('duration_secs', 0) for r in hrs) / len(hrs)
+        print(f"  {h:<14} {len(hrs):>6} {ok/len(hrs)*100:>5.0f}% {format_cost(avg_cost):>10} {avg_dur:>7.0f}s")
+
+    # Per project
+    projects = defaultdict(list)
+    for r in runs:
+        projects[r.get('project', 'unknown')].append(r)
+
+    print(f"\n  PER PROJECT")
+    print(f"  {'Project':<22} {'Runs':>6} {'Cost':>10} {'Last Run':>20}")
+    print(f"  {'-'*22} {'-'*6} {'-'*10} {'-'*20}")
+    for p, prs in sorted(projects.items()):
+        cost = sum(r.get('cost_usd', 0) for r in prs)
+        last = max(r.get('ts', '') for r in prs)
+        print(f"  {p:<22} {len(prs):>6} {format_cost(cost):>10} {last[:19]:>20}")
+
+    # Recent runs
+    recent = sorted(runs, key=lambda r: r.get('ts', ''), reverse=True)[:10]
+    print(f"\n  RECENT RUNS")
+    print(f"  {'Time':<20} {'Harness':<10} {'Project':<16} {'Exit':>5} {'Cost':>8} {'Dur':>7}")
+    print(f"  {'-'*20} {'-'*10} {'-'*16} {'-'*5} {'-'*8} {'-'*7}")
+    for r in recent:
+        ts = r.get('ts', '')[:19]
+        h = r.get('harness', '?')[:10]
+        p = r.get('project', '?')[:16]
+        ex = r.get('exit_code', '?')
+        cost = format_cost(r.get('cost_usd', 0))
+        dur = f"{r.get('duration_secs', 0):.0f}s"
+        print(f"  {ts:<20} {h:<10} {p:<16} {ex:>5} {cost:>8} {dur:>7}")
+
+    # 7-day trend
+    print(f"\n  7-DAY TREND")
+    for i in range(6, -1, -1):
+        day = (now - timedelta(days=i)).date()
+        day_runs = [r for r in runs if r.get('ts', '')[:10] == str(day)]
+        if day_runs:
+            fails = sum(1 for r in day_runs if r.get('exit_code', 1) != 0)
+            bar = '#' * len(day_runs)
+            fail_str = f" ({fails} fail)" if fails else ""
+            print(f"  {day} {len(day_runs):>3} runs {bar}{fail_str}")
+        else:
+            print(f"  {day}   0 runs")
+
+    print("")
+
+
+def build_rich_display(console, project_filter: str):
+    """Build and render the rich dashboard. Returns False to stop, True to continue."""
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich import box
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    current_runs = load_runs(project_filter)
+
+    console.clear()
+
+    if not current_runs:
+        console.print(Panel(
+            "No runs recorded yet.",
+            title=f"Delegate Dashboard — {now.strftime('%H:%M:%S UTC')}"
+        ))
+        return True
+
+    total = len(current_runs)
+    successes = sum(1 for r in current_runs if r.get('exit_code', 1) == 0)
+    total_cost = sum(r.get('cost_usd', 0) for r in current_runs)
+    total_claude_eq = sum(r.get('cost_claude_eq', 0) for r in current_runs)
+    total_saved = total_claude_eq - total_cost
+
+    # Today
+    today_runs = [r for r in current_runs if r.get('ts', '')[:10] == str(today)]
+    today_cost = sum(r.get('cost_usd', 0) for r in today_runs)
+    today_eq = sum(r.get('cost_claude_eq', 0) for r in today_runs)
+    today_saved = today_eq - today_cost
+
+    summary_text = (
+        f"[bold]Runs:[/] {total}  "
+        f"[bold]Success:[/] {successes/total*100:.0f}%  "
+        f"[bold]Cost:[/] {format_cost(total_cost)}  "
+        f"[bold]Saved:[/] {format_cost(total_saved)}\n"
+        f"[bold]Today:[/] {len(today_runs)} runs  "
+        f"[bold]Today Cost:[/] {format_cost(today_cost)}  "
+        f"[bold]Today Saved:[/] {format_cost(today_saved)}"
+    )
+    console.print(Panel(
+        summary_text,
+        title=f"Delegate Dashboard — {now.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    ))
+
+    # Per harness table
+    harness_table = Table(title="Per Harness", box=box.SIMPLE)
+    harness_table.add_column("Harness")
+    harness_table.add_column("Runs", justify="right")
+    harness_table.add_column("OK%", justify="right")
+    harness_table.add_column("Avg Cost", justify="right")
+    harness_table.add_column("Avg Dur", justify="right")
+
+    harnesses = defaultdict(list)
+    for r in current_runs:
+        harnesses[r.get('harness', 'unknown')].append(r)
+    for h, hrs in sorted(harnesses.items()):
+        ok = sum(1 for r in hrs if r.get('exit_code', 1) == 0)
+        avg_cost = sum(r.get('cost_usd', 0) for r in hrs) / len(hrs)
+        avg_dur = sum(r.get('duration_secs', 0) for r in hrs) / len(hrs)
+        harness_table.add_row(
+            h, str(len(hrs)), f"{ok/len(hrs)*100:.0f}%",
+            format_cost(avg_cost), f"{avg_dur:.0f}s"
+        )
+    console.print(harness_table)
+
+    # Per project table
+    project_table = Table(title="Per Project", box=box.SIMPLE)
+    project_table.add_column("Project")
+    project_table.add_column("Runs", justify="right")
+    project_table.add_column("Cost", justify="right")
+    project_table.add_column("Last Run")
+
+    projects = defaultdict(list)
+    for r in current_runs:
+        projects[r.get('project', 'unknown')].append(r)
+    for p, prs in sorted(projects.items()):
+        cost = sum(r.get('cost_usd', 0) for r in prs)
+        last = max(r.get('ts', '') for r in prs)
+        project_table.add_row(p, str(len(prs)), format_cost(cost), last[:19])
+    console.print(project_table)
+
+    # Recent runs table
+    recent_table = Table(title="Recent Runs (last 10)", box=box.SIMPLE)
+    recent_table.add_column("Time")
+    recent_table.add_column("Harness")
+    recent_table.add_column("Project")
+    recent_table.add_column("Exit", justify="right")
+    recent_table.add_column("Cost", justify="right")
+    recent_table.add_column("Dur", justify="right")
+
+    recent = sorted(current_runs, key=lambda r: r.get('ts', ''), reverse=True)[:10]
+    for r in recent:
+        style = "red" if r.get('exit_code', 1) != 0 else ""
+        recent_table.add_row(
+            r.get('ts', '')[:19],
+            r.get('harness', '?'),
+            r.get('project', '?'),
+            str(r.get('exit_code', '?')),
+            format_cost(r.get('cost_usd', 0)),
+            f"{r.get('duration_secs', 0):.0f}s",
+            style=style
+        )
+    console.print(recent_table)
+
+    # 7-day trend table
+    trend_table = Table(title="7-Day Failure Trend", box=box.SIMPLE)
+    trend_table.add_column("Date")
+    trend_table.add_column("Runs", justify="right")
+    trend_table.add_column("Fails", justify="right")
+    trend_table.add_column("Bar")
+
+    for i in range(6, -1, -1):
+        day = (now - timedelta(days=i)).date()
+        day_runs = [r for r in current_runs if r.get('ts', '')[:10] == str(day)]
+        fails = sum(1 for r in day_runs if r.get('exit_code', 1) != 0)
+        bar = '[green]' + '#' * (len(day_runs) - fails) + '[/green]'
+        if fails:
+            bar += '[red]' + 'X' * fails + '[/red]'
+        trend_table.add_row(str(day), str(len(day_runs)), str(fails) if day_runs else '-', bar)
+    console.print(trend_table)
+
+    return True
+
+
+def rich_dashboard(runs: list, refresh: int, project_filter: str):
+    """Rich TUI dashboard with optional auto-refresh."""
+    import time
+    from rich.console import Console
+
+    console = Console()
+
+    if refresh > 0:
+        try:
+            while True:
+                build_rich_display(console, project_filter)
+                console.print(f"\n[dim]Refreshing every {refresh}s — Ctrl+C to quit[/dim]")
+                time.sleep(refresh)
+        except KeyboardInterrupt:
+            print("\nDashboard stopped.")
+    else:
+        build_rich_display(console, project_filter)
+
+
+def main():
+    refresh = 0
+    project = ''
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == '--refresh' and i + 1 < len(args):
+            refresh = int(args[i + 1])
+            i += 2
+        elif args[i] == '--project' and i + 1 < len(args):
+            project = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    runs = load_runs(project)
+
+    try:
+        import rich  # noqa: F401
+        rich_dashboard(runs, refresh, project)
+    except ImportError:
+        plain_dashboard(runs)
+
+
+if __name__ == '__main__':
+    main()

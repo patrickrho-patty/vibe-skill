@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""
+delegate-ast-check — AST-level diff validation for delegated changes
+Usage: delegate-ast-check <workdir>
+"""
+import sys, os, ast, re, subprocess
+from pathlib import Path
+
+def get_modified_files(workdir: str) -> list:
+    r = subprocess.run(['git', 'diff', '--name-only'], capture_output=True, text=True, cwd=workdir)
+    return [f.strip() for f in r.stdout.splitlines() if f.strip()]
+
+def get_file_before(workdir: str, filepath: str) -> str:
+    """Get file content from HEAD (before changes)."""
+    r = subprocess.run(['git', 'show', f'HEAD:{filepath}'], capture_output=True, text=True, cwd=workdir)
+    return r.stdout if r.returncode == 0 else ''
+
+def check_python_ast(workdir: str, filepath: str) -> list:
+    issues = []
+    full_path = Path(workdir) / filepath
+
+    if not full_path.exists():
+        return issues
+
+    try:
+        new_content = full_path.read_text()
+        new_tree = ast.parse(new_content)
+    except SyntaxError:
+        return [f"Syntax error in {filepath} — cannot parse AST"]
+
+    old_content = get_file_before(workdir, filepath)
+    old_tree = None
+    if old_content:
+        try:
+            old_tree = ast.parse(old_content)
+        except SyntaxError:
+            pass  # Old file had syntax errors, skip comparison
+
+    # Check 1: Duplicate function/class names
+    new_names = {}
+    for node in ast.walk(new_tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            name = node.name
+            if name in new_names:
+                issues.append(f"Duplicate function '{name}' at lines {new_names[name]} and {node.lineno}")
+            else:
+                new_names[name] = node.lineno
+        elif isinstance(node, ast.ClassDef):
+            name = node.name
+            if name in new_names:
+                issues.append(f"Duplicate class '{name}' at lines {new_names[name]} and {node.lineno}")
+            else:
+                new_names[name] = node.lineno
+
+    # Check 2: Changed function signatures
+    if old_tree:
+        old_funcs = {}
+        for node in ast.walk(old_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = node.args
+                param_count = len(args.args) + len(args.posonlyargs) + len(args.kwonlyargs)
+                old_funcs[node.name] = param_count
+
+        for node in ast.walk(new_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in old_funcs:
+                    args = node.args
+                    new_count = len(args.args) + len(args.posonlyargs) + len(args.kwonlyargs)
+                    old_count = old_funcs[node.name]
+                    if new_count != old_count:
+                        issues.append(f"Function '{node.name}' signature changed: {old_count} → {new_count} params (line {node.lineno})")
+
+    # Check 3: Functions defined but never called (new functions only)
+    if old_tree:
+        old_func_names = set()
+        for node in ast.walk(old_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                old_func_names.add(node.name)
+
+        new_func_names = set()
+        for node in ast.walk(new_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                new_func_names.add(node.name)
+
+        # Find function calls in new code
+        called = set()
+        for node in ast.walk(new_tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    called.add(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    called.add(node.func.attr)
+
+        # New functions that are never called
+        brand_new = new_func_names - old_func_names
+        for name in brand_new:
+            if name not in called and not name.startswith('_') and name != 'main':
+                issues.append(f"New function '{name}' defined but never called in this file")
+
+    # Check 4: Removed functions
+    if old_tree:
+        old_func_names = set()
+        for node in ast.walk(old_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                old_func_names.add(node.name)
+        new_func_names = set()
+        for node in ast.walk(new_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                new_func_names.add(node.name)
+        removed = old_func_names - new_func_names
+        for name in removed:
+            if not name.startswith('_'):
+                issues.append(f"Function '{name}' was removed")
+
+    return issues
+
+def check_js_ts(workdir: str, filepath: str) -> list:
+    issues = []
+    full_path = Path(workdir) / filepath
+    if not full_path.exists():
+        return issues
+
+    try:
+        content = full_path.read_text()
+    except Exception:
+        return issues
+
+    old_content = get_file_before(workdir, filepath)
+
+    # Duplicate declarations
+    from collections import Counter
+    decls = re.findall(r'^(?:export\s+)?(?:function|class|const|let|var)\s+(\w+)', content, re.M)
+    for name, count in Counter(decls).items():
+        if count > 1:
+            issues.append(f"Duplicate declaration '{name}' ({count} times)")
+
+    # Removed exports
+    if old_content:
+        old_exports = set(re.findall(r'^export\s+(?:function|class|const|let|var)\s+(\w+)', old_content, re.M))
+        new_exports = set(re.findall(r'^export\s+(?:function|class|const|let|var)\s+(\w+)', content, re.M))
+        new_decls = set(re.findall(r'^(?:function|class|const|let|var)\s+(\w+)', content, re.M))
+        for name in old_exports:
+            if name in new_decls and name not in new_exports:
+                issues.append(f"Export removed from '{name}' — may break importers")
+
+    # New functions never referenced
+    if old_content:
+        old_funcs = set(re.findall(r'^(?:export\s+)?function\s+(\w+)', old_content, re.M))
+        new_funcs = set(re.findall(r'^(?:export\s+)?function\s+(\w+)', content, re.M))
+        brand_new = new_funcs - old_funcs
+        for name in brand_new:
+            # Check if referenced elsewhere in file
+            references = len(re.findall(r'\b' + re.escape(name) + r'\b', content)) - 1  # minus the definition
+            if references <= 0:
+                issues.append(f"New function '{name}' defined but never referenced")
+
+    return issues
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: delegate-ast-check <workdir>", file=sys.stderr)
+        sys.exit(1)
+
+    workdir = sys.argv[1]
+    files = get_modified_files(workdir)
+    all_issues = []
+    checked = 0
+
+    for filepath in files:
+        if filepath.endswith('.py'):
+            issues = check_python_ast(workdir, filepath)
+            checked += 1
+        elif filepath.endswith(('.js', '.ts', '.jsx', '.tsx')):
+            issues = check_js_ts(workdir, filepath)
+            checked += 1
+        else:
+            continue
+
+        for issue in issues:
+            all_issues.append((filepath, issue))
+            print(f'  [AST] {filepath}: {issue}')
+
+    if all_issues:
+        print(f"\n=== AST ISSUES: {len(all_issues)} in {checked} file(s) ===")
+        sys.exit(1)
+    elif checked > 0:
+        print(f"=== AST CHECK OK ({checked} file(s)) ===")
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main()

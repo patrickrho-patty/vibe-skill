@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+# delegate — Generic entry point for AI coding agent delegation
+# Usage: delegate <harness> <workdir> <prompt> [max-turns] [agent] [timeout-secs]
+#
+# Supported harnesses: vibe, pi, opencode
+#
+# PROMPT SAFETY (2026-05-12):
+#   Long prompts with Python code, dicts, colons, emojis, or accented chars are
+#   passed via a temp file to the harness adapter. This avoids shell injection /
+#   truncation bugs.
+#
+# RUN LOG (2026-05-12):
+#   Appends one JSONL entry to ~/.local/share/delegate-runs.jsonl after each run.
+#   Fields: ts, harness, delegate, project, prompt_words, agent, max_turns,
+#           timeout_secs, exit_code, timed_out, tool_calls, files_changed,
+#           syntax_errors, duration_secs, tokens_in, tokens_out, tokens_total,
+#           cost_usd, model, warn_count, search_replace_fails, cost_claude_eq,
+#           wrote_nothing.
+
+HARNESS="${1:?Usage: delegate <harness> <workdir> <prompt> [max-turns] [agent] [timeout-secs]}"
+WORKDIR="${2:?Workdir required}"
+PROMPT="${3:?Prompt required}"
+MAX_TURNS="${4:-10}"
+AGENT="${5:-}"
+TIMEOUT_SECS="${6:-180}"
+
+# Validate harness
+ADAPTER_DIR="$(cd "$(dirname "$0")/adapters" 2>/dev/null && pwd)"
+if [ -z "$ADAPTER_DIR" ] || [ ! -f "$ADAPTER_DIR/$HARNESS" ]; then
+  echo "ERROR: unknown harness '$HARNESS' — no adapter found at $ADAPTER_DIR/$HARNESS" >&2
+  echo "Available harnesses: vibe, pi, opencode" >&2
+  exit 1
+fi
+
+if [ ! -d "$WORKDIR" ]; then
+  echo "ERROR: workdir '$WORKDIR' does not exist" >&2
+  exit 1
+fi
+
+# Model override: read alias from flag file.
+# DELEGATE_ACTIVE_MODEL and VIBE_ACTIVE_MODEL are exported for adapters to inherit.
+# Falls back to legacy vibe-model.flag for backward compatibility.
+DELEGATE_MODEL_FLAG="$HOME/.local/share/delegate-model.flag"
+LEGACY_MODEL_FLAG="$HOME/.local/share/vibe-model.flag"
+DELEGATE_MODEL_OVERRIDE=""
+if [ -f "$DELEGATE_MODEL_FLAG" ]; then
+  DELEGATE_MODEL_OVERRIDE=$(tr -d '[:space:]' < "$DELEGATE_MODEL_FLAG")
+elif [ -f "$LEGACY_MODEL_FLAG" ]; then
+  DELEGATE_MODEL_OVERRIDE=$(tr -d '[:space:]' < "$LEGACY_MODEL_FLAG")
+fi
+if [ -n "$DELEGATE_MODEL_OVERRIDE" ]; then
+  export DELEGATE_ACTIVE_MODEL="$DELEGATE_MODEL_OVERRIDE"
+  export VIBE_ACTIVE_MODEL="$DELEGATE_MODEL_OVERRIDE"
+fi
+
+cd "$WORKDIR"
+
+# Create rollback checkpoint
+CHECKPOINT=$("$(dirname "$0")/delegate-rollback" create "$WORKDIR" 2>/dev/null || echo "")
+if [ -n "$CHECKPOINT" ]; then
+  echo "Checkpoint: $CHECKPOINT"
+fi
+
+START_NS=$(date +%s%N)
+PROMPT_WORDS=$(printf '%s' "$PROMPT" | wc -w | tr -d ' ')
+GIT_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
+
+# Track modified files for post-run syntax checks
+FILES_BEFORE=$(git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
+
+echo "=== DELEGATE START (${HARNESS}) ==="
+echo "Workdir : $WORKDIR"
+echo "Harness : $HARNESS"
+echo "Agent   : ${AGENT:-default}"
+echo "Model   : ${DELEGATE_MODEL_OVERRIDE:-(config default)}"
+echo "Turns   : $MAX_TURNS"
+echo "Timeout : ${TIMEOUT_SECS}s"
+echo "Prompt  : ${PROMPT:0:120}..."
+echo "=========================="
+
+# Write prompt to a temp file — avoids shell injection when prompt contains
+# colons, quotes, emojis, accented chars, or multi-line Python/JS code.
+PROMPT_FILE=$(mktemp /tmp/delegate-prompt-XXXXXX.txt)
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
+
+# Stats handoff file: adapter writes JSON here; bash reads it for the log.
+DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX.json)
+printf '{}' > "$DELEGATE_STATS_FILE"
+export DELEGATE_STATS_FILE
+
+trap 'rm -f "$PROMPT_FILE" "$DELEGATE_STATS_FILE"' EXIT
+
+# Run pre-condition contracts if defined
+if [ -f "$WORKDIR/.delegate/contracts.yaml" ]; then
+  if ! python3 "$(dirname "$0")/delegate-contracts" pre "$WORKDIR"; then
+    echo "=== PRE-CONTRACT FAILED — delegation aborted ==="
+    if [ -n "$CHECKPOINT" ]; then
+      "$(dirname "$0")/delegate-rollback" accept "$WORKDIR" "$CHECKPOINT" 2>/dev/null
+    fi
+    exit 2
+  fi
+fi
+
+# Invoke harness-specific adapter
+"$ADAPTER_DIR/$HARNESS" "$WORKDIR" "$PROMPT_FILE" "$MAX_TURNS" "$AGENT" "$TIMEOUT_SECS" "$DELEGATE_STATS_FILE"
+ADAPTER_EXIT=$?
+
+echo ""
+if [ "$ADAPTER_EXIT" -eq 124 ]; then
+  echo "=== DELEGATE TIMEOUT (>${TIMEOUT_SECS}s) — killed ==="
+else
+  echo "=== DELEGATE DONE [${HARNESS}] (exit: $ADAPTER_EXIT) ==="
+fi
+
+# ── Reject-and-correct loop ─────────────────────────────────────────────────
+# If adapter succeeded but there's a correction file, run correction rounds
+CORRECTION_ROUNDS=0
+MAX_CORRECTIONS=2
+FINAL_DISPOSITION="accepted"
+
+# Check if the orchestrator left a correction file
+CORRECTION_FILE="$WORKDIR/.delegate/correction-prompt.txt"
+
+while [ "$CORRECTION_ROUNDS" -lt "$MAX_CORRECTIONS" ] && [ -f "$CORRECTION_FILE" ]; do
+  CORRECTION_ROUNDS=$((CORRECTION_ROUNDS + 1))
+  CORRECTION_PROMPT=$(cat "$CORRECTION_FILE")
+  rm -f "$CORRECTION_FILE"
+
+  echo ""
+  echo "=== CORRECTION ROUND $CORRECTION_ROUNDS/$MAX_CORRECTIONS ==="
+  echo "Correction: ${CORRECTION_PROMPT:0:120}..."
+
+  # Write correction to prompt file and re-run adapter with fewer turns
+  printf '%s' "$CORRECTION_PROMPT" > "$PROMPT_FILE"
+  "$ADAPTER_DIR/$HARNESS" "$WORKDIR" "$PROMPT_FILE" "3" "$AGENT" "$TIMEOUT_SECS" "$DELEGATE_STATS_FILE"
+  ADAPTER_EXIT=$?
+
+  if [ "$ADAPTER_EXIT" -ne 0 ]; then
+    FINAL_DISPOSITION="correction_failed"
+    echo "=== CORRECTION FAILED (exit: $ADAPTER_EXIT) ==="
+    break
+  fi
+
+  FINAL_DISPOSITION="corrected"
+  echo "=== CORRECTION APPLIED ==="
+done
+
+if [ "$CORRECTION_ROUNDS" -eq 0 ]; then
+  FINAL_DISPOSITION="accepted"
+fi
+
+# Run post-condition contracts if defined
+CONTRACT_POST_PASS=true
+if [ -f "$WORKDIR/.delegate/contracts.yaml" ]; then
+  if ! python3 "$(dirname "$0")/delegate-contracts" post "$WORKDIR"; then
+    CONTRACT_POST_PASS=false
+    # If correction file doesn't already exist, trigger a correction
+    if [ ! -f "$WORKDIR/.delegate/correction-prompt.txt" ] && [ "$CORRECTION_ROUNDS" -lt "$MAX_CORRECTIONS" ]; then
+      # Generate correction from failed contract output
+      echo "Post-contract failed — triggering correction round"
+    fi
+  fi
+fi
+
+# ── Post-run syntax checks — language-agnostic ────────────────────────────────
+FILES_AFTER=$(git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
+CHANGED=$(comm -13 <(echo "$FILES_BEFORE" | sort) <(echo "$FILES_AFTER" | sort) 2>/dev/null)
+
+SYNTAX_COUNT_FILE=$(mktemp /tmp/delegate-syntax-count-XXXXXX.txt)
+echo 0 > "$SYNTAX_COUNT_FILE"
+export DELEGATE_CHANGED="$CHANGED"
+export SYNTAX_COUNT_FILE
+
+python3 << 'PYSYNTAX'
+import os, shutil, subprocess
+
+changed = [f for f in os.environ.get('DELEGATE_CHANGED', '').splitlines() if f.strip()]
+# CWD is always $WORKDIR — cd "$WORKDIR" runs before this block.
+errors  = 0
+checked = 0
+
+def has(cmd):
+    return shutil.which(cmd) is not None
+
+def check(cmd, label, cwd=None):
+    global errors, checked
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    checked += 1
+    if r.returncode != 0:
+        errors += 1
+        msg = (r.stderr or r.stdout).strip().split('\n')[0][:120]
+        print(f'  [SYNTAX ERROR] {label}: {msg}')
+
+# Per-file checks — tools available without project context
+for f in changed:
+    if not os.path.isfile(f):
+        continue
+    if   f.endswith('.py'):
+        check(['python3', '-m', 'py_compile', f], f)
+    elif f.endswith(('.js', '.mjs', '.cjs')) and has('node'):
+        check(['node', '--check', f], f)
+    elif f.endswith('.rb') and has('ruby'):
+        check(['ruby', '-c', f], f)
+    elif f.endswith(('.sh', '.bash')):
+        check(['bash', '-n', f], f)
+    elif f.endswith('.php') and has('php'):
+        check(['php', '-l', f], f)
+    elif f.endswith('.json'):
+        check(['python3', '-c', 'import json,sys;json.load(open(sys.argv[1]))', f], f)
+
+# Project-level checks — run once if any matching files changed
+live = [f for f in changed if os.path.isfile(f)]
+if any(f.endswith('.go') for f in live) and has('go'):
+    check(['go', 'vet', './...'], 'go vet')
+if any(f.endswith('.rs') for f in live) and has('cargo'):
+    check(['cargo', 'check', '--quiet'], 'cargo check')
+if any(f.endswith(('.ts', '.tsx')) for f in live):
+    if has('tsc') and os.path.isfile('tsconfig.json'):
+        check(['tsc', '--noEmit', '--skipLibCheck'], 'tsc --noEmit')
+    else:
+        print('  [SKIP] tsc — no tsconfig.json found, TypeScript not checked')
+
+if checked > 0:
+    if errors == 0:
+        print(f'=== SYNTAX OK ({checked} check(s)) ===')
+    else:
+        print(f'=== SYNTAX ERRORS: {errors} in {checked} check(s) — fix before committing ===')
+
+cf = os.environ.get('SYNTAX_COUNT_FILE', '')
+if cf:
+    with open(cf, 'w') as fh:
+        fh.write(str(errors))
+PYSYNTAX
+
+TOTAL_ERRORS=$(cat "$SYNTAX_COUNT_FILE" 2>/dev/null || echo 0)
+rm -f "$SYNTAX_COUNT_FILE"
+
+# ── Duplicate/regression detection ────────────────────────────────────────────
+python3 "$(dirname "$0")/delegate-check-duplicates" "$WORKDIR" || true
+
+# ── Git summary ────────────────────────────────────────────────────────────────
+GIT_AFTER=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
+
+if [ "$GIT_BEFORE" != "$GIT_AFTER" ]; then
+  echo ""
+  echo "=== COMMITS CREATED ==="
+  git log "$GIT_BEFORE".."$GIT_AFTER" --oneline
+  echo ""
+  echo "=== DIFF STAT ==="
+  git diff "$GIT_BEFORE".."$GIT_AFTER" --stat
+else
+  echo ""
+  echo "=== UNCOMMITTED CHANGES ==="
+  git diff --stat 2>/dev/null || echo "(no git)"
+  git status --short 2>/dev/null
+fi
+
+
+# ── Run log ────────────────────────────────────────────────────────────────────
+END_NS=$(date +%s%N)
+FILES_CHANGED_COUNT=$(printf '%s\n' "$CHANGED" | grep -c '[^[:space:]]' 2>/dev/null)
+FILES_CHANGED_COUNT=${FILES_CHANGED_COUNT:-0}
+TOTAL_ERRORS=${TOTAL_ERRORS:-0}
+
+export DELEGATE_HARNESS="$HARNESS"
+export DELEGATE_NAME="$HARNESS"
+export DELEGATE_WORKDIR="$WORKDIR"
+export DELEGATE_EXIT="$ADAPTER_EXIT"
+export DELEGATE_TIMEOUT="$TIMEOUT_SECS"
+export DELEGATE_PROMPT_WORDS="$PROMPT_WORDS"
+export DELEGATE_AGENT="${AGENT:-default}"
+export DELEGATE_MAX_TURNS="$MAX_TURNS"
+export DELEGATE_FILES_CHANGED="$FILES_CHANGED_COUNT"
+export DELEGATE_SYNTAX_ERRORS="$TOTAL_ERRORS"
+export DELEGATE_START_NS="$START_NS"
+export DELEGATE_END_NS="$END_NS"
+export DELEGATE_CHECKPOINT="$CHECKPOINT"
+export DELEGATE_CORRECTION_ROUNDS="$CORRECTION_ROUNDS"
+export DELEGATE_FINAL_DISPOSITION="$FINAL_DISPOSITION"
+export DELEGATE_CONTRACT_POST_PASS="$CONTRACT_POST_PASS"
+
+python3 << 'PYLOG'
+import json, os
+from pathlib import Path
+from datetime import datetime, timezone
+
+LOG = Path.home() / '.local' / 'share' / 'delegate-runs.jsonl'
+LOG.parent.mkdir(parents=True, exist_ok=True)
+
+sf = os.environ.get('DELEGATE_STATS_FILE', '')
+stats = {}
+if sf:
+    try:
+        stats = json.loads(Path(sf).read_text())
+    except Exception:
+        pass
+
+start_ns = int(os.environ.get('DELEGATE_START_NS', 0) or 0)
+end_ns   = int(os.environ.get('DELEGATE_END_NS',   0) or 0)
+duration = round((end_ns - start_ns) / 1e9, 1) if start_ns and end_ns else 0
+
+harness = os.environ.get('DELEGATE_HARNESS', 'vibe')
+
+entry = {
+    'ts':            datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'harness':       harness,
+    'delegate':      harness,
+    'workdir':       os.environ.get('DELEGATE_WORKDIR', ''),
+    'project':       os.path.basename(os.environ.get('DELEGATE_WORKDIR', '')),
+    'prompt_words':  int(os.environ.get('DELEGATE_PROMPT_WORDS', 0) or 0),
+    'agent':         os.environ.get('DELEGATE_AGENT', 'default'),
+    'max_turns':     int(os.environ.get('DELEGATE_MAX_TURNS', 0) or 0),
+    'timeout_secs':  int(os.environ.get('DELEGATE_TIMEOUT', 0) or 0),
+    'exit_code':     int(os.environ.get('DELEGATE_EXIT', 0) or 0),
+    'timed_out':     os.environ.get('DELEGATE_EXIT') == '124',
+    'files_changed':       int(os.environ.get('DELEGATE_FILES_CHANGED', 0) or 0),
+    'syntax_errors':       int(os.environ.get('DELEGATE_SYNTAX_ERRORS', 0) or 0),
+    'duration_secs':       duration,
+    'warn_count':          stats.get('warn_count', 0),
+    'search_replace_fails': stats.get('search_replace_fails', 0),
+    'checkpoint':          os.environ.get('DELEGATE_CHECKPOINT', ''),
+    'correction_rounds':   int(os.environ.get('DELEGATE_CORRECTION_ROUNDS', 0) or 0),
+    'final_disposition':   os.environ.get('DELEGATE_FINAL_DISPOSITION', 'accepted'),
+    'contract_post_pass':  os.environ.get('DELEGATE_CONTRACT_POST_PASS', 'true') == 'true',
+}
+entry.update(stats)
+
+# Compute Claude Sonnet 4.6 equivalent cost for savings tracking.
+ti = entry.get('tokens_in', 0)
+to = entry.get('tokens_out', 0)
+entry['cost_claude_eq'] = round((ti * 3.0 + to * 15.0) / 1_000_000, 6)
+
+# True when delegate ran tool calls but wrote nothing (vague prompt or task already done).
+# Excluded for read-only agents that intentionally never write files.
+_readonly_agents = ('code-reviewer', 'code-architect', 'planner')
+entry['wrote_nothing'] = (
+    entry.get('files_changed', 0) == 0
+    and entry.get('tool_calls', 0) >= 3
+    and entry.get('exit_code', 0) == 0
+    and entry.get('agent', 'default') not in _readonly_agents
+)
+
+with open(LOG, 'a') as f:
+    f.write(json.dumps(entry) + '\n')
+
+tok = entry.get('tokens_total', '?')
+saved = entry['cost_claude_eq'] - entry.get('cost_usd', 0)
+saved_str = f', saved ~${saved:.4f} vs Claude' if saved > 0 else ''
+print(f'[log] → {LOG}  ({tok} tokens, exit {entry["exit_code"]}, {duration}s{saved_str})')
+PYLOG
+
+# Cleanup checkpoint on success; keep on failure for manual rollback
+if [ -n "$CHECKPOINT" ]; then
+  if [ "$ADAPTER_EXIT" -eq 0 ] && [ "$TOTAL_ERRORS" -eq 0 ] && [ "$CONTRACT_POST_PASS" = "true" ]; then
+    "$(dirname "$0")/delegate-rollback" accept "$WORKDIR" "$CHECKPOINT" 2>/dev/null
+  else
+    echo "Checkpoint preserved: $CHECKPOINT (rollback with: delegate-rollback rollback \"$WORKDIR\" \"$CHECKPOINT\")"
+  fi
+fi
+
+exit $ADAPTER_EXIT

@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# delegate-parallel — run multiple delegate tasks in parallel via git worktrees
+#
+# Usage: delegate-parallel <workdir> <tasks-file> [harness]
+#
+# Tasks file format (one task per line):
+#   <prompt> | <expected-files-comma-separated>
+#
+# Each task runs in its own git worktree. After all complete, results are
+# merged back sequentially. File conflicts are detected before dispatch —
+# overlapping tasks run sequentially instead of in parallel.
+
+set -euo pipefail
+
+WORKDIR="${1:?Usage: delegate-parallel <workdir> <tasks-file> [harness]}"
+TASKS_FILE="${2:?Tasks file required}"
+HARNESS="${3:-vibe}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DELEGATE="$SCRIPT_DIR/delegate"
+
+if [ ! -d "$WORKDIR" ]; then
+  echo "ERROR: workdir '$WORKDIR' does not exist" >&2
+  exit 1
+fi
+
+if [ ! -f "$TASKS_FILE" ]; then
+  echo "ERROR: tasks file '$TASKS_FILE' does not exist" >&2
+  exit 1
+fi
+
+cd "$WORKDIR"
+
+# Ensure we're in a git repo
+if ! git rev-parse --git-dir &>/dev/null; then
+  echo "ERROR: $WORKDIR is not a git repository" >&2
+  exit 1
+fi
+
+# Parse tasks file into arrays
+declare -a PROMPTS=()
+declare -a FILE_LISTS=()
+declare -a TASK_IDS=()
+
+TASK_NUM=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  [[ "$line" == \#* ]] && continue
+  TASK_NUM=$((TASK_NUM + 1))
+
+  if [[ "$line" == *"|"* ]]; then
+    PROMPT="${line%%|*}"
+    FILES="${line##*|}"
+    PROMPT=$(echo "$PROMPT" | xargs)  # trim
+    FILES=$(echo "$FILES" | xargs)
+  else
+    PROMPT="$line"
+    FILES=""
+  fi
+
+  PROMPTS+=("$PROMPT")
+  FILE_LISTS+=("$FILES")
+  TASK_IDS+=("task-$TASK_NUM")
+done < "$TASKS_FILE"
+
+TOTAL=${#PROMPTS[@]}
+echo "=== PARALLEL DELEGATION ==="
+echo "Tasks   : $TOTAL"
+echo "Harness : $HARNESS"
+echo "Workdir : $WORKDIR"
+echo "==========================="
+
+if [ "$TOTAL" -eq 0 ]; then
+  echo "No tasks found in $TASKS_FILE"
+  exit 0
+fi
+
+# ── File overlap detection ──────────────────────────────────────────────────
+# Build conflict groups: tasks sharing files must run sequentially
+declare -A FILE_TO_TASK=()
+declare -A TASK_GROUP=()
+
+for i in "${!PROMPTS[@]}"; do
+  tid="${TASK_IDS[$i]}"
+  files="${FILE_LISTS[$i]}"
+  conflict_group=""
+
+  IFS=',' read -ra flist <<< "$files"
+  for f in "${flist[@]}"; do
+    f=$(echo "$f" | xargs)
+    [ -z "$f" ] && continue
+    if [ -n "${FILE_TO_TASK[$f]:-}" ]; then
+      # This file is already claimed by another task
+      conflict_group="${FILE_TO_TASK[$f]}"
+      break
+    fi
+    FILE_TO_TASK["$f"]="$tid"
+  done
+
+  if [ -n "$conflict_group" ]; then
+    # Assign to same group as conflicting task
+    group="${TASK_GROUP[$conflict_group]:-$conflict_group}"
+    TASK_GROUP["$tid"]="$group"
+  else
+    TASK_GROUP["$tid"]="$tid"
+  fi
+done
+
+# Group tasks by their assigned group
+declare -A GROUPS=()
+for i in "${!TASK_IDS[@]}"; do
+  tid="${TASK_IDS[$i]}"
+  group="${TASK_GROUP[$tid]:-$tid}"
+  GROUPS["$group"]+="$i "
+done
+
+echo ""
+echo "Parallel groups: ${#GROUPS[@]}"
+for group in "${!GROUPS[@]}"; do
+  members=(${GROUPS[$group]})
+  count=${#members[@]}
+  if [ "$count" -gt 1 ]; then
+    echo "  Group $group: $count tasks (sequential — file overlap)"
+  else
+    echo "  Group $group: independent"
+  fi
+done
+
+# ── Worktree base dir — cleaned up on exit ──────────────────────────────────
+WORKTREE_BASE="/tmp/delegate-parallel-$$"
+mkdir -p "$WORKTREE_BASE"
+
+cleanup() {
+  # Remove any leftover worktrees and temp branches
+  for group in "${!GROUP_WORKTREES[@]}"; do
+    wtree="${GROUP_WORKTREES[$group]:-}"
+    branch="${GROUP_BRANCHES[$group]:-}"
+    [ -n "$wtree" ] && git worktree remove --force "$wtree" 2>/dev/null || true
+    [ -n "$branch" ] && git branch -D "$branch" 2>/dev/null || true
+  done
+  rm -rf "$WORKTREE_BASE"
+}
+trap cleanup EXIT
+
+# ── Create worktrees and dispatch ───────────────────────────────────────────
+declare -A GROUP_PIDS=()
+declare -A GROUP_WORKTREES=()
+declare -A GROUP_BRANCHES=()
+declare -A GROUP_LOGS=()
+MERGE_ORDER=()
+
+for group in "${!GROUPS[@]}"; do
+  members=(${GROUPS[$group]})
+  BRANCH="delegate-parallel-${group}-$(date +%s)"
+  WTREE="$WORKTREE_BASE/$group"
+  LOG="$WORKTREE_BASE/$group.log"
+
+  # Create worktree on a new branch
+  git worktree add -b "$BRANCH" "$WTREE" HEAD 2>/dev/null
+
+  GROUP_WORKTREES["$group"]="$WTREE"
+  GROUP_BRANCHES["$group"]="$BRANCH"
+  GROUP_LOGS["$group"]="$LOG"
+  MERGE_ORDER+=("$group")
+
+  # Run tasks in this group sequentially within a background subshell
+  (
+    for idx in "${members[@]}"; do
+      prompt="${PROMPTS[$idx]}"
+      echo "[${TASK_IDS[$idx]}] Starting: ${prompt:0:80}..."
+      "$DELEGATE" "$HARNESS" "$WTREE" "$prompt" 10 "" 180
+      echo "[${TASK_IDS[$idx]}] Exit: $?"
+    done
+  ) > "$LOG" 2>&1 &
+
+  GROUP_PIDS["$group"]=$!
+  echo "Dispatched group $group (PID ${GROUP_PIDS[$group]}) in worktree $WTREE"
+done
+
+# ── Wait for all groups ─────────────────────────────────────────────────────
+echo ""
+echo "Waiting for ${#GROUP_PIDS[@]} group(s)..."
+FAILURES=0
+
+for group in "${MERGE_ORDER[@]}"; do
+  pid="${GROUP_PIDS[$group]}"
+  if wait "$pid"; then
+    echo "  Group $group: completed (PID $pid)"
+  else
+    echo "  Group $group: FAILED (PID $pid)"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
+echo ""
+echo "=== ALL GROUPS COMPLETE ($FAILURES failure(s)) ==="
+
+# ── Merge results back ──────────────────────────────────────────────────────
+echo ""
+echo "=== MERGING RESULTS ==="
+
+MERGE_FAILURES=0
+for group in "${MERGE_ORDER[@]}"; do
+  branch="${GROUP_BRANCHES[$group]}"
+  wtree="${GROUP_WORKTREES[$group]}"
+
+  # Check if the worktree has any changes (staged or unstaged)
+  changes=$(cd "$wtree" && git status --porcelain 2>/dev/null)
+  if [ -z "$changes" ]; then
+    echo "  Group $group: no changes, skipping merge"
+    git worktree remove "$wtree" 2>/dev/null || true
+    git branch -D "$branch" 2>/dev/null || true
+    GROUP_WORKTREES["$group"]=""
+    GROUP_BRANCHES["$group"]=""
+    continue
+  fi
+
+  # Commit all changes in the worktree
+  (cd "$wtree" && git add -A && git commit -m "delegate-parallel: $group" --no-verify 2>/dev/null) || true
+
+  # Merge into main working tree
+  echo "  Merging group $group ($branch)..."
+  if git merge "$branch" --no-edit 2>/dev/null; then
+    echo "  Group $group: merged successfully"
+  else
+    echo "  Group $group: MERGE CONFLICT — manual resolution required"
+    git merge --abort 2>/dev/null || true
+    MERGE_FAILURES=$((MERGE_FAILURES + 1))
+  fi
+
+  # Cleanup worktree and branch (also cleared so trap skip re-cleanup)
+  git worktree remove "$wtree" 2>/dev/null || true
+  git branch -D "$branch" 2>/dev/null || true
+  GROUP_WORKTREES["$group"]=""
+  GROUP_BRANCHES["$group"]=""
+done
+
+echo ""
+if [ "$MERGE_FAILURES" -gt 0 ]; then
+  echo "=== PARALLEL COMPLETE — $MERGE_FAILURES merge conflict(s) need manual resolution ==="
+  exit 1
+else
+  echo "=== PARALLEL COMPLETE — all ${#MERGE_ORDER[@]} group(s) merged ==="
+  echo ""
+  echo "=== FINAL DIFF ==="
+  git diff --stat HEAD~"${#MERGE_ORDER[@]}" HEAD 2>/dev/null || git diff --stat
+  exit 0
+fi

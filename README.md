@@ -4,24 +4,24 @@
 
 ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg) ![Shell](https://img.shields.io/badge/language-Shell-green.svg) ![GitHub stars](https://img.shields.io/github/stars/pcx-wave/vibe-skill?style=social) ![Claude Code skill](https://img.shields.io/badge/-Claude%20Code%20skill-CC785C)
 
-**Claude orchestrates. Vibe does the heavy lifting. You review the diff, save tokens, costs and avoid hitting limits!**
+**Claude orchestrates. Cheap coding agents do the heavy lifting. You review the diff, save tokens, costs, and avoid hitting limits.**
 
-Claude sees only ~500–1500 tokens per run regardless of how many file reads Vibe performs internally — massive savings on exploratory and implementation tasks.
+Claude sees only ~500–1500 tokens per run regardless of how many file reads the delegate performs internally — massive savings on exploratory and implementation tasks.
 
-Note that Vibe works natively with Mistral models which are capable and significantly cheaper than Claude, but Vibe can also be configured to use any other provider/model instead. Eg you can use a deepseek model with vibe tooling. 
+Supports **Vibe (Mistral), Pi (earendil-works), and OpenCode** as delegate harnesses. Vibe works natively with Mistral models (capable and significantly cheaper than Claude), but can also be configured to use any other provider/model such as DeepSeek.
 
 Summary:
-1. User types `/vibe <instruction>` in Claude Code
+1. User types `/vibe <instruction>` or `/delegate <harness> <instruction>` in Claude Code
 2. Claude decomposes the task and writes a prompt
-3. `vibe-delegate` runs Mistral Vibe in a pseudo-TTY
+3. `delegate` routes to the right harness adapter and runs the coding agent
 4. The delegate reports tool calls, token counts, and `git diff --stat`
-5. Claude reviews the diff and summarizes the result
+5. Claude reviews the diff and summarizes the result — sending corrections back to the harness if needed
 
 ---
 
 ## Why
 
-**Cost savings** — Vibe's file reads and edits consume cheap delegate tokens (or whatever model you configure), not Claude tokens:
+**Cost savings** — The delegate's file reads and edits consume cheap harness tokens (or whatever model you configure), not Claude tokens:
 
 | Scenario | Claude Sonnet 4.6 | Mistral Medium 3.5 | DeepSeek V4 Flash |
 |----------|-------------------|--------------------|-------------------|
@@ -71,15 +71,17 @@ Above 131M tokens/month, subscribe to Mistral Pro and use it until the quota (~1
 
 Mitigation: grep for the exact target before constructing the SEARCH block; phrase prompts as imperative verbs with an explicit file target.
 
-**Context window protection** — On long coding sessions, every file read, function body, and debug loop burns Claude's context. Delegating to Vibe keeps that budget free. Claude enters the task, hands off, and comes back only to review the result — no context bleed from Vibe's internal turns.
+**Context window protection** — On long coding sessions, every file read, function body, and debug loop burns Claude's context. Delegating keeps that budget free. Claude enters the task, hands off, and comes back only to review the result — no context bleed from the harness's internal turns.
 
-**Built-in quality gate** — Claude doesn't just fire and forget. After each Vibe run, Claude reads the `git diff`, checks for syntax errors, and summarizes what changed before reporting back to you. You get a second pair of eyes on every delegation without lifting a finger.
+**Built-in quality gate** — Claude doesn't just fire and forget. After each run, Claude reads the `git diff`, checks for syntax errors, and summarizes what changed before reporting back to you. You get a second pair of eyes on every delegation without lifting a finger.
 
 ---
 
 ## Prerequisites
 
-- [Mistral Vibe](https://vibe.mistral.ai/) CLI installed and authenticated (`vibe --version`)
+- [Mistral Vibe](https://vibe.mistral.ai/) CLI installed and authenticated (`vibe --version`) — required for the `vibe` harness
+- [Pi](https://earendil.works) CLI — optional, for the `pi` harness
+- [OpenCode](https://opencode.ai) CLI — optional, for the `opencode` harness
 - [Claude Code](https://claude.ai/code) with skills enabled
 - `script` command available (GNU/Linux or BSD/macOS variant)
 - `timeout` command available; on macOS install GNU coreutils for `gtimeout` (or ensure your chosen `timeout` fallback is set up)
@@ -91,7 +93,40 @@ Mitigation: grep for the exact target before constructing the SEARCH block; phra
 ## Installation
 
 ```bash
-git clone https://github.com/pcx-wave/vibe-skill.git && cd vibe-skill && mkdir -p ~/tools ~/.claude/skills/vibe ~/.claude/skills/vibeon ~/.claude/skills/vibeoff ~/.claude/skills/vibestatus ~/.claude/skills/vibe-model-pick ~/.claude/skills/vibe-model-clear ~/.claude/skills/vibe-report && ln -sf "$(pwd)/tools/vibe-delegate" ~/tools/vibe-delegate && ln -sf "$(pwd)/tools/delegate-report" ~/tools/delegate-report && chmod +x ~/tools/vibe-delegate ~/tools/delegate-report && ln -sf "$(pwd)/SKILL.md" ~/.claude/skills/vibe/SKILL.md && ln -sf "$(pwd)/VIBEON.md" ~/.claude/skills/vibeon/SKILL.md && ln -sf "$(pwd)/VIBEOFF.md" ~/.claude/skills/vibeoff/SKILL.md && ln -sf "$(pwd)/VIBESTATUS.md" ~/.claude/skills/vibestatus/SKILL.md && ln -sf "$(pwd)/VIBE-MODEL-PICK.md" ~/.claude/skills/vibe-model-pick/SKILL.md && ln -sf "$(pwd)/VIBE-MODEL-CLEAR.md" ~/.claude/skills/vibe-model-clear/SKILL.md && ln -sf "$(pwd)/VIBE-REPORT.md" ~/.claude/skills/vibe-report/SKILL.md
+git clone https://github.com/pcx-wave/vibe-skill.git && cd vibe-skill && \
+mkdir -p ~/tools \
+  ~/.claude/skills/vibe \
+  ~/.claude/skills/vibeon \
+  ~/.claude/skills/vibeoff \
+  ~/.claude/skills/vibestatus \
+  ~/.claude/skills/vibe-model-pick \
+  ~/.claude/skills/vibe-model-clear \
+  ~/.claude/skills/vibe-report && \
+ln -sf "$(pwd)/tools/delegate"              ~/tools/delegate && \
+ln -sf "$(pwd)/tools/vibe-delegate"         ~/tools/vibe-delegate && \
+ln -sf "$(pwd)/tools/delegate-report"       ~/tools/delegate-report && \
+ln -sf "$(pwd)/tools/delegate-rollback"     ~/tools/delegate-rollback && \
+ln -sf "$(pwd)/tools/delegate-reject"       ~/tools/delegate-reject && \
+ln -sf "$(pwd)/tools/delegate-contracts"    ~/tools/delegate-contracts && \
+ln -sf "$(pwd)/tools/delegate-distill"      ~/tools/delegate-distill && \
+ln -sf "$(pwd)/tools/delegate-failures"     ~/tools/delegate-failures && \
+ln -sf "$(pwd)/tools/delegate-learnings"    ~/tools/delegate-learnings && \
+ln -sf "$(pwd)/tools/delegate-router"       ~/tools/delegate-router && \
+ln -sf "$(pwd)/tools/delegate-parallel"     ~/tools/delegate-parallel && \
+ln -sf "$(pwd)/tools/delegate-ast-check"    ~/tools/delegate-ast-check && \
+ln -sf "$(pwd)/tools/delegate-check-duplicates" ~/tools/delegate-check-duplicates && \
+ln -sf "$(pwd)/tools/delegate-batch"        ~/tools/delegate-batch && \
+ln -sf "$(pwd)/tools/delegate-chain"        ~/tools/delegate-chain && \
+ln -sf "$(pwd)/tools/delegate-replay"       ~/tools/delegate-replay && \
+ln -sf "$(pwd)/tools/delegate-dashboard"    ~/tools/delegate-dashboard && \
+chmod +x ~/tools/delegate ~/tools/vibe-delegate ~/tools/delegate-report && \
+ln -sf "$(pwd)/SKILL.md"           ~/.claude/skills/vibe/SKILL.md && \
+ln -sf "$(pwd)/VIBEON.md"          ~/.claude/skills/vibeon/SKILL.md && \
+ln -sf "$(pwd)/VIBEOFF.md"         ~/.claude/skills/vibeoff/SKILL.md && \
+ln -sf "$(pwd)/VIBESTATUS.md"      ~/.claude/skills/vibestatus/SKILL.md && \
+ln -sf "$(pwd)/VIBE-MODEL-PICK.md" ~/.claude/skills/vibe-model-pick/SKILL.md && \
+ln -sf "$(pwd)/VIBE-MODEL-CLEAR.md" ~/.claude/skills/vibe-model-clear/SKILL.md && \
+ln -sf "$(pwd)/VIBE-REPORT.md"     ~/.claude/skills/vibe-report/SKILL.md
 ```
 
 ### Step-by-step
@@ -101,24 +136,42 @@ git clone https://github.com/pcx-wave/vibe-skill.git && cd vibe-skill && mkdir -
 git clone https://github.com/pcx-wave/vibe-skill.git
 cd vibe-skill
 
-# 2. Install the scripts (symlinks — stay in sync with git pull)
+# 2. Install core scripts (symlinks — stay in sync with git pull)
 mkdir -p ~/tools
-ln -sf "$(pwd)/tools/vibe-delegate" ~/tools/vibe-delegate
-ln -sf "$(pwd)/tools/delegate-report" ~/tools/delegate-report
-chmod +x ~/tools/vibe-delegate ~/tools/delegate-report
+ln -sf "$(pwd)/tools/delegate"           ~/tools/delegate
+ln -sf "$(pwd)/tools/vibe-delegate"      ~/tools/vibe-delegate   # backward-compat shim
+ln -sf "$(pwd)/tools/delegate-report"    ~/tools/delegate-report
+chmod +x ~/tools/delegate ~/tools/vibe-delegate ~/tools/delegate-report
 
-# 3. Install the skills for Claude Code
-mkdir -p ~/.claude/skills/vibe ~/.claude/skills/vibeon ~/.claude/skills/vibeoff ~/.claude/skills/vibestatus \
-         ~/.claude/skills/vibe-model-pick ~/.claude/skills/vibe-model-clear ~/.claude/skills/vibe-report
-ln -sf "$(pwd)/SKILL.md" ~/.claude/skills/vibe/SKILL.md
-ln -sf "$(pwd)/VIBEON.md" ~/.claude/skills/vibeon/SKILL.md
-ln -sf "$(pwd)/VIBEOFF.md" ~/.claude/skills/vibeoff/SKILL.md
-ln -sf "$(pwd)/VIBESTATUS.md" ~/.claude/skills/vibestatus/SKILL.md
-ln -sf "$(pwd)/VIBE-MODEL-PICK.md" ~/.claude/skills/vibe-model-pick/SKILL.md
+# 3. Install advanced tools (optional but recommended)
+ln -sf "$(pwd)/tools/delegate-rollback"          ~/tools/delegate-rollback
+ln -sf "$(pwd)/tools/delegate-reject"            ~/tools/delegate-reject
+ln -sf "$(pwd)/tools/delegate-contracts"         ~/tools/delegate-contracts
+ln -sf "$(pwd)/tools/delegate-distill"           ~/tools/delegate-distill
+ln -sf "$(pwd)/tools/delegate-failures"          ~/tools/delegate-failures
+ln -sf "$(pwd)/tools/delegate-learnings"         ~/tools/delegate-learnings
+ln -sf "$(pwd)/tools/delegate-router"            ~/tools/delegate-router
+ln -sf "$(pwd)/tools/delegate-parallel"          ~/tools/delegate-parallel
+ln -sf "$(pwd)/tools/delegate-ast-check"         ~/tools/delegate-ast-check
+ln -sf "$(pwd)/tools/delegate-check-duplicates"  ~/tools/delegate-check-duplicates
+ln -sf "$(pwd)/tools/delegate-batch"             ~/tools/delegate-batch
+ln -sf "$(pwd)/tools/delegate-chain"             ~/tools/delegate-chain
+ln -sf "$(pwd)/tools/delegate-replay"            ~/tools/delegate-replay
+ln -sf "$(pwd)/tools/delegate-dashboard"         ~/tools/delegate-dashboard
+
+# 4. Install skills for Claude Code
+mkdir -p ~/.claude/skills/vibe ~/.claude/skills/vibeon ~/.claude/skills/vibeoff \
+         ~/.claude/skills/vibestatus ~/.claude/skills/vibe-model-pick \
+         ~/.claude/skills/vibe-model-clear ~/.claude/skills/vibe-report
+ln -sf "$(pwd)/SKILL.md"            ~/.claude/skills/vibe/SKILL.md
+ln -sf "$(pwd)/VIBEON.md"           ~/.claude/skills/vibeon/SKILL.md
+ln -sf "$(pwd)/VIBEOFF.md"          ~/.claude/skills/vibeoff/SKILL.md
+ln -sf "$(pwd)/VIBESTATUS.md"       ~/.claude/skills/vibestatus/SKILL.md
+ln -sf "$(pwd)/VIBE-MODEL-PICK.md"  ~/.claude/skills/vibe-model-pick/SKILL.md
 ln -sf "$(pwd)/VIBE-MODEL-CLEAR.md" ~/.claude/skills/vibe-model-clear/SKILL.md
-ln -sf "$(pwd)/VIBE-REPORT.md" ~/.claude/skills/vibe-report/SKILL.md
+ln -sf "$(pwd)/VIBE-REPORT.md"      ~/.claude/skills/vibe-report/SKILL.md
 
-# 4. (Optional) Enable auto-mode — Claude delegates all code tasks automatically
+# 5. (Optional) Enable auto-mode — Claude delegates all code tasks automatically
 #    without requiring /vibe each time. Toggle with /vibeon and /vibeoff.
 grep -q "vibe auto-mode" ~/.claude/CLAUDE.md 2>/dev/null || cat >> ~/.claude/CLAUDE.md << 'EOF'
 
@@ -130,10 +183,9 @@ At the start of every user request that involves writing, editing, or fixing cod
 
 The flag is toggled by `/vibeon` and `/vibeoff`.
 EOF
-
 ```
 
-Verify with `~/tools/vibe-delegate /tmp "Say hello in one sentence." 3`
+Verify with `~/tools/delegate vibe /tmp "Say hello in one sentence." 3`
 
 ### Updating
 
@@ -143,11 +195,12 @@ Because both installs use symlinks, a `git pull` is all you need:
 cd ~/vibe-skill && git pull
 ```
 
-`~/tools/vibe-delegate` and `~/.claude/skills/vibe/SKILL.md` are automatically up to date — no re-copy needed.
+All tools and skills update automatically — no re-copy needed.
 
 > **Migrating from a previous `cp`-based install?** Replace the copies with symlinks:
 > ```bash
 > cd ~/vibe-skill
+> ln -sf "$(pwd)/tools/delegate" ~/tools/delegate
 > ln -sf "$(pwd)/tools/vibe-delegate" ~/tools/vibe-delegate
 > ln -sf "$(pwd)/SKILL.md" ~/.claude/skills/vibe/SKILL.md
 > ```
@@ -156,7 +209,9 @@ cd ~/vibe-skill && git pull
 
 ## Usage
 
-In a Claude Code session:
+### Basic delegation
+
+In a Claude Code session, delegate to the default harness (Vibe):
 
 ```
 /vibe add a dark mode toggle to the settings page
@@ -170,7 +225,26 @@ In a Claude Code session:
 /vibe add pagination to the GET /posts route, 20 items per page
 ```
 
-Claude decomposes the task, writes the Vibe prompt, supervises execution, and reports the diff.
+### Multi-harness delegation
+
+Use `/delegate` to specify a harness explicitly:
+
+```
+/delegate vibe add pagination to the GET /posts route
+/delegate pi refactor the auth middleware into its own module
+/delegate opencode add docstrings to all public functions in utils.py
+```
+
+Claude decomposes the task, writes the prompt, supervises execution, and reports the diff. If the output has fixable issues, Claude sends a correction back to the harness (reject-correct loop) rather than writing the fix itself.
+
+### Advanced commands
+
+```
+/delegate-dashboard     — live TUI showing active runs, cost, and trends
+/delegate-batch <task>  — smart batching for bulk tasks ("add docstrings to all functions")
+/delegate-chain <chain> — multi-step workflow (planner → implementor → validator)
+/delegate-route <desc>  — recommend best harness based on run history
+```
 
 ### Model selection
 
@@ -183,7 +257,7 @@ By default, Vibe uses whatever `active_model` is set in `~/.vibe/config.toml`. Y
 /vibestatus                   — shows both auto-mode state and active model override
 ```
 
-The override is stored in `~/.local/share/vibe-model.flag` and is picked up by `vibe-delegate` on every run. It persists across sessions until you clear it.
+The override is stored in `~/.local/share/vibe-model.flag` and is picked up by `delegate` on every run. It persists across sessions until you clear it.
 
 ### Vibe-auto mode
 
@@ -238,29 +312,146 @@ Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x24.0)
 
 ---
 
-## How vibe-delegate works
+## Architecture
 
 ```
-Claude Code
-  └─ /vibe <instruction>
-       └─ SKILL.md logic
-            └─ ~/tools/vibe-delegate <workdir> <prompt> [turns] [agent] [timeout]
-                 ├─ writes prompt to temp file (avoids shell injection with UTF-8/emoji)
-                 ├─ generates a temp shell script for the vibe command
-                 ├─ runs: script -q -c "<vibe-script>" /dev/null (Linux)
-                 │        or script -q /dev/null "<vibe-script>" (macOS)
-                 │         └─ allocates pseudo-TTY (required — vibe hangs without one)
-                 ├─ pipes JSON streaming output through Python parser
-                 │         └─ prints [read] / [write] / [WARN] / [vibe] lines
-                 ├─ reads real token counts from Mistral session log
-                 ├─ runs syntax checks on modified .py and .js files
-                 ├─ prints git diff --stat
-                 └─ appends JSON entry to ~/.local/share/delegate-runs.jsonl
+Claude Code  /  Codex CLI
+  └─ /vibe <instruction>  OR  /delegate <harness> <instruction>
+       └─ SKILL.md / CODEX-SKILL.md logic
+            └─ ~/tools/delegate <harness> <workdir> <prompt> [turns] [agent] [timeout]
+                 ├─ delegate-rollback: git branch checkpoint (pre-run)
+                 ├─ delegate-distill: inject .delegate/project-brief.md
+                 ├─ delegate-contracts: run pre-conditions
+                 │
+                 ├─ tools/adapters/vibe     → script pseudo-TTY + vibe --output streaming
+                 ├─ tools/adapters/pi       → pi --mode json -p "prompt"
+                 └─ tools/adapters/opencode → opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"
+                 │
+                 └─ shared post-run pipeline (all harnesses):
+                      ├─ delegate-contracts: run post-conditions
+                      ├─ delegate-check-duplicates: catch known harness bugs
+                      ├─ delegate-ast-check: semantic validation
+                      ├─ syntax checks (.py, .js)
+                      ├─ git diff --stat
+                      └─ JSONL log → ~/.local/share/delegate-runs.jsonl
 ```
 
-The `script ... /dev/null` trick allocates a pseudo-TTY on both Linux and macOS; prompt via temp file avoids shell injection with UTF-8/emoji.
+**Reject-correct loop** — if the diff has fixable issues, Claude sends a correction back to the harness (max 2 rounds) rather than writing the fix itself. All code generation stays on cheap delegate tokens.
 
-**Shell vs Python split** — `vibe-delegate` started as pure shell. Python is now embedded in four places where shell falls short:
+**Orchestrator vs harness distinction:**
+
+| Role | Tools |
+|------|-------|
+| Orchestrators (review, route, write prompts) | Claude Code, Codex CLI |
+| Delegate harnesses (write code cheaply) | Vibe (Mistral), Pi, OpenCode |
+
+---
+
+## Tools Reference
+
+All tools live in `~/tools/` (symlinked from the repo's `tools/` directory).
+
+| Tool | Purpose |
+|------|---------|
+| `delegate` | Generic delegation entry point: `delegate <harness> <workdir> <prompt> [turns] [agent] [timeout]` |
+| `vibe-delegate` | Backward-compat shim — calls `delegate vibe "$@"` |
+| `adapters/vibe` | Vibe harness adapter (pseudo-TTY, JSON stream parser, token extraction) |
+| `adapters/pi` | Pi harness adapter: `pi --mode json -p "prompt"` |
+| `adapters/opencode` | OpenCode adapter: `opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"` |
+| `delegate-rollback` | Git branch checkpoints: auto-created before each run, auto-cleaned on success, preserved on failure |
+| `delegate-reject` | Write a correction prompt for the reject-correct loop |
+| `delegate-correct` | Send a correction directly to the harness |
+| `delegate-contracts` | Run pre/post conditions from `.delegate/contracts.yaml` |
+| `delegate-distill` | Generate `.delegate/project-brief.md` for context injection |
+| `delegate-failures` | Failure memory — record and query past failures |
+| `delegate-learnings` | Learning loop — capture correction patterns, suggest prompt improvements |
+| `delegate-router` | Recommend best harness based on run history and task type |
+| `delegate-parallel` | Run tasks in parallel via git worktrees |
+| `delegate-ast-check` | AST-level semantic validation (shadowed vars, broken signatures, unused exports) |
+| `delegate-check-duplicates` | Detect duplicate function definitions and known harness regressions |
+| `delegate-batch` | Smart batching — groups bulk tasks by file |
+| `delegate-chain` | Multi-step delegation workflows: `delegate-chain <workdir> <chain.yaml>` |
+| `delegate-replay` | Step-by-step replay of recorded sessions for debugging |
+| `delegate-dashboard` | Live TUI dashboard (requires `rich`; falls back to plain text) |
+| `delegate-report` | Historical token/cost/failure report across all runs |
+
+---
+
+## Feature Overview
+
+### Multi-harness support
+
+Three delegate harnesses, same post-run pipeline:
+
+| Harness | Status | Invocation |
+|---------|--------|-----------|
+| `vibe` | Active | Mistral Vibe CLI via pseudo-TTY, `--output streaming` |
+| `pi` | Stub | `pi --mode json -p "prompt"` |
+| `opencode` | Stub | `opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"` |
+
+### Rollback checkpoints
+
+`delegate-rollback` creates a git branch checkpoint before each delegation. On success it cleans up automatically. On failure the branch is preserved — `delegate-rollback rollback <workdir> <branch>` restores the previous state.
+
+### Reject-and-correct loop
+
+The orchestrator never writes code itself. After reviewing the diff it classifies:
+- `accept` — changes look correct, done
+- `reject-correct` — specific fixable issue, sent back to harness via `delegate-reject`
+- `reject-retry` — wrong approach, full re-run with new prompt
+- `reject-abort` — unfixable, escalate to user
+
+Max 2 correction rounds before escalating. All code generation stays on cheap delegate tokens.
+
+### Delegation contracts
+
+`.delegate/contracts.yaml` defines pre/post conditions per project. Pre-conditions block delegation if they fail. Post-conditions auto-trigger reject-correct if they fail, allowing fully mechanical acceptance for routine tasks.
+
+### Context distillation
+
+`delegate-distill` generates `.delegate/project-brief.md` — stack, key files, data models, conventions. Auto-injected into every delegation prompt so Claude stops re-reading the same project structure on every task.
+
+### Failure memory + learning loop
+
+`delegate-failures` records structured failure events (file, harness, error type, symptom, fix). Injected as warnings before similar future delegations. `delegate-learnings` captures correction patterns from reject-correct cycles and suggests prompt improvements over time.
+
+### Parallel delegation
+
+`delegate-parallel` runs independent sub-tasks concurrently in separate git worktrees. Each harness runs in isolation; results are merged after all complete.
+
+### Harness-aware routing
+
+`delegate-router` builds a routing table from `delegate-runs.jsonl` — success rates per harness per task type. Use `/delegate-route <description>` to get a recommendation before delegating manually, or let the system suggest the best harness automatically.
+
+### AST validation + duplicate detector
+
+`delegate-ast-check` compares AST before and after: function signatures, imports, class hierarchies. `delegate-check-duplicates` catches Vibe's known code-duplication bug and merge conflict markers.
+
+### Smart batching
+
+`delegate-batch` detects bulk-style prompts ("add docstrings to all functions") and groups work by file — 1 delegation per file instead of 1 per function. Estimates total cost before starting.
+
+### Delegation chains
+
+`delegate-chain` runs multi-step workflows defined in `.delegate/chains/*.yaml`. Pre-built chains: `implement`, `bugfix`. Each step passes its output to the next; chains abort on failure and roll back.
+
+### Session replay
+
+`delegate-replay` renders a full step-by-step playback of a recorded session — what the harness read, what it changed, and why — for debugging failures and refining prompts.
+
+### Live dashboard
+
+`delegate-dashboard` shows a real-time TUI view of active runs, token burn, cost today/this week, failure rate trend, and per-project breakdown. Falls back to plain text if `rich` is unavailable.
+
+### Codex orchestrator
+
+`CODEX-SKILL.md` ports the orchestration logic so Codex CLI can act as the manager — decomposing tasks, delegating to Vibe/Pi/OpenCode, and reviewing diffs — with the same economic model as Claude Code.
+
+---
+
+## Shell vs Python split
+
+`vibe-delegate` started as pure shell. Python is embedded in four places where shell falls short:
 
 | What | Why Python |
 |------|-----------|
@@ -273,6 +464,21 @@ The `script ... /dev/null` trick allocates a pseudo-TTY on both Linux and macOS;
 
 ---
 
+## Reporting
+
+Every run is logged to `~/.local/share/delegate-runs.jsonl` with tokens, cost, model, harness, and failure details. Query it with:
+
+```bash
+~/tools/delegate-report                  # full report (all time)
+~/tools/delegate-report --since 7        # last 7 days
+~/tools/delegate-report --project myapp  # filter by project
+~/tools/delegate-report --fails          # failures and issues only
+```
+
+Or from Claude Code: `/vibe-report [args]`
+
+---
+
 ## Examples
 
 - `examples/good-prompts.md` — prompt patterns that reliably work
@@ -282,11 +488,7 @@ The `script ... /dev/null` trick allocates a pseudo-TTY on both Linux and macOS;
 
 ## Sister project
 
-A parallel delegate using **Gemini CLI** is available at [pcx-wave/gemini-skill](https://github.com/pcx-wave/gemini-skill). Same orchestration pattern, same run log format — different model and trade-offs.
-
-## Reporting
-
-Every run is logged to `~/.local/share/delegate-runs.jsonl` with tokens, cost, model, and failure details. Query it with `~/tools/delegate-report [--since N] [--project NAME] [--fails]` or from Claude Code: `/vibe-report [args]`.
+A parallel delegate using **Gemini CLI** is available at [pcx-wave/gemini-skill](https://github.com/pcx-wave/gemini-skill). Same orchestration pattern, same run log format — different model and trade-offs. Both write to the same `delegate-runs.jsonl`, making runs comparable across delegates.
 
 ---
 
