@@ -59,6 +59,7 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
     events = []
     tool_calls = 0
     warns = 0
+    # Read model from the LATEST runs.jsonl entry (updates per step)
     model = read_model(workdir) if workdir else 'unknown'
     messages = []
     files_touched = set()
@@ -174,19 +175,26 @@ def plain_watch(workdir: str, session_file: str):
     print(f"Watching: {session_file}")
     print(f"Press Ctrl+C to stop\n")
 
+    current_session = session_file
     last_size = 0
     while True:
+        # Auto-follow latest session
+        latest = find_latest_session(workdir)
+        if latest and latest != current_session:
+            current_session = latest
+            last_size = 0
+
         try:
-            current_size = os.path.getsize(session_file)
+            current_size = os.path.getsize(current_session)
         except OSError:
             current_size = 0
 
         if current_size != last_size:
             last_size = current_size
-            state = parse_session(session_file, workdir)
+            state = parse_session(current_session, workdir)
             os.system('clear')
             print(f"=== DELEGATION LIVE ({datetime.now().strftime('%H:%M:%S')}) ===")
-            print(f"Session: {os.path.basename(session_file)}")
+            print(f"Session: {os.path.basename(current_session)}")
             print(f"Model  : {state['model']}")
             print(f"Events : {state['events']}  Tools: {state['tool_calls']}  Warns: {state['warns']}")
             print(f"Files  : {', '.join(state['files_touched']) or '(none yet)'}")
@@ -204,17 +212,27 @@ def plain_watch(workdir: str, session_file: str):
 
 def rich_watch(workdir: str, session_file: str):
     console = Console()
+    current_session = [session_file]  # mutable ref for closure
 
     def build_display():
+        # Auto-follow latest session (new step = new session file)
+        latest = find_latest_session(workdir)
+        if latest and latest != current_session[0]:
+            current_session[0] = latest
+
+        sf = current_session[0]
         try:
-            current_size = os.path.getsize(session_file)
+            current_size = os.path.getsize(sf)
         except OSError:
             current_size = 0
 
-        state = parse_session(session_file, workdir)
+        state = parse_session(sf, workdir)
         now = datetime.now().strftime('%H:%M:%S')
 
-        header = f"[bold]Model:[/] {state['model']}  [bold]Events:[/] {state['events']}  [bold]Tools:[/] {state['tool_calls']}  [bold]Warns:[/] {state['warns']}"
+        # Show session filename as step indicator
+        sf_name = os.path.basename(sf)
+
+        header = f"[bold]Model:[/] {state['model']}  [bold]Events:[/] {state['events']}  [bold]Tools:[/] {state['tool_calls']}  [bold]Warns:[/] {state['warns']}  [dim]Session: {sf_name}[/dim]"
         files_str = ', '.join(state['files_touched']) or '(none yet)'
 
         activity_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
