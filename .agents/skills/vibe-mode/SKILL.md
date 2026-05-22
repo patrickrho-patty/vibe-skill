@@ -18,11 +18,11 @@ When the user says `$vibe-mode <mode>`:
    Each `.yaml` file is a mode. The name is the filename without `.yaml`.
 
 2. If mode is `simple` or `clear`:
-   - Run: `rm -f ~/.local/share/vibe-mode.flag`
+   - Run: `rm -f .delegate/mode.flag`
    - Confirm: "Mode: simple (direct delegation, no chain)"
 
 3. If mode matches a chain file:
-   - Run: `echo <mode> > ~/.local/share/vibe-mode.flag`
+   - Run: `echo <mode> > .delegate/mode.flag`
    - Read the description: `grep '^description:' .claude/vibe-skill/.delegate/chains/<mode>.yaml`
    - Confirm: "Mode set to <mode> — <description>"
 
@@ -35,6 +35,6 @@ When the user says `$vibe-mode <mode>`:
 
 ## How it integrates
 
-When `$vibe <task>` is invoked and `~/.local/share/vibe-mode.flag` exists,
+When `$vibe <task>` is invoked and `.delegate/mode.flag` exists,
 use `delegate-chain` with the matching chain YAML. If the chain file was
 deleted, warn and fall back to simple mode.

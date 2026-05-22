@@ -19,10 +19,10 @@ Codex does not use slash commands. Instead, interpret user intent directly:
 | "show me the delegate report" | Run `.claude/vibe-skill/tools/delegate-report` |
 | "show failures" | Run `.claude/vibe-skill/tools/delegate-report --fails` |
 | "show dashboard" | Run `.claude/vibe-skill/tools/delegate-dashboard` |
-| "turn on auto-delegate" | `touch ~/.local/share/vibe-auto.flag` |
-| "turn off auto-delegate" | `rm -f ~/.local/share/vibe-auto.flag` |
-| "set model to X" | `echo X > ~/.local/share/delegate-model.flag` |
-| "clear model override" | `rm -f ~/.local/share/delegate-model.flag` |
+| "turn on auto-delegate" | `mkdir -p .delegate && touch .delegate/auto.flag` |
+| "turn off auto-delegate" | `rm -f .delegate/auto.flag` |
+| "set model to X" | `mkdir -p .delegate && echo X > .delegate/model.flag` |
+| "clear model override" | `rm -f .delegate/model.flag` |
 
 ---
 
@@ -31,7 +31,7 @@ Codex does not use slash commands. Instead, interpret user intent directly:
 Codex runs in a sandboxed environment. The following apply:
 
 - **Filesystem access**: `.claude/vibe-skill/tools/delegate` and adapters require read/write/exec access
-  to `.claude/vibe-skill/tools/`, `~/.local/share/`, and the project workdir. Ensure these paths are
+  to `.claude/vibe-skill/tools/` and the project's `.delegate/` directory. Ensure these paths are
   accessible before delegating.
 - **Network**: delegate scripts invoke external APIs (Vibe, Pi, OpenCode) — network must
   be allowed.
@@ -39,9 +39,9 @@ Codex runs in a sandboxed environment. The following apply:
   Codex must not run `git commit` during delegation — delegates never commit.
 - **pseudo-TTY**: Vibe requires a pseudo-TTY (allocated internally by `vibe-delegate`/
   the `vibe` adapter). Codex should not invoke Vibe directly in a pipe.
-- **Model flag**: `~/.local/share/delegate-model.flag` — read by `delegate` to override
+- **Model flag**: `.delegate/model.flag` — read by `delegate` to override
   the active model. Codex reads/writes this file directly.
-- **Run log**: `~/.local/share/delegate-runs.jsonl` — appended by every `delegate` run.
+- **Run log**: `.delegate/runs.jsonl` — appended by every `delegate` run (per-project).
   Codex can read this for status; never modify it directly.
 
 ---
@@ -171,10 +171,10 @@ VERIFY: grep for "datetime.date" in app.py and confirm it appears in fetch_data.
 **Model override** (applies to all harnesses):
 ```bash
 # Set override
-echo <alias> > ~/.local/share/delegate-model.flag
+mkdir -p .delegate && echo <alias> > .delegate/model.flag
 
 # Clear override
-rm -f ~/.local/share/delegate-model.flag
+rm -f .delegate/model.flag
 ```
 
 **Available Vibe model aliases** (from `~/.vibe/config.toml`):
@@ -212,7 +212,7 @@ Claude equivalent: same tokens would cost ~$0.0168  (ratio x2.0)
 
 === UNCOMMITTED CHANGES ===
  app.py | 4 ++--
-[log] → ~/.local/share/delegate-runs.jsonl  (4800 tokens, exit 0, 34.2s)
+[log] → .delegate/runs.jsonl  (4800 tokens, exit 0, 34.2s)
 ```
 
 **Delegates never commit.** All changes are left unstaged.
@@ -284,7 +284,7 @@ entry = {
     'cost_usd': round(cost, 6), 'cost_estimated': True,
     'lines_added': lines_added,
 }
-log = os.path.expanduser('~/.local/share/delegate-runs.jsonl')
+log = os.path.expanduser('.delegate/runs.jsonl')
 with open(log, 'a') as f:
     f.write(json.dumps(entry) + '\n')
 print(f'[log] codex-manual → {project}  ~{lines_added} lines added  est. cost \${cost:.4f}')
@@ -336,14 +336,14 @@ Codex only receives the compressed final output (~500–1500 tokens/run).
 - Typical ratio: ~2x cheaper per token than Claude
 
 Real token counts and cost are printed after every run and appended to:
-`~/.local/share/delegate-runs.jsonl`
+`.delegate/runs.jsonl`
 
 ---
 
 ## Run Log Fields
 
 Every `.claude/vibe-skill/tools/delegate` run appends one JSON entry to
-`~/.local/share/delegate-runs.jsonl`.
+`.delegate/runs.jsonl`.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -389,12 +389,12 @@ Every `.claude/vibe-skill/tools/delegate` run appends one JSON entry to
 **Raw jq queries:**
 ```bash
 # Success rate
-jq -r '.exit_code' ~/.local/share/delegate-runs.jsonl | sort | uniq -c
+jq -r '.exit_code' .delegate/runs.jsonl | sort | uniq -c
 
 # Total cost vs Claude equivalent
-jq -r '[.cost_usd, .cost_claude_eq] | @tsv' ~/.local/share/delegate-runs.jsonl \
+jq -r '[.cost_usd, .cost_claude_eq] | @tsv' .delegate/runs.jsonl \
   | awk '{c+=$1; e+=$2} END {printf "Spent: $%.4f  Claude eq: $%.4f  Saved: $%.4f\n", c, e, e-c}'
 
 # Per-harness breakdown
-jq -r '.harness' ~/.local/share/delegate-runs.jsonl | sort | uniq -c | sort -rn
+jq -r '.harness' .delegate/runs.jsonl | sort | uniq -c | sort -rn
 ```

@@ -10,7 +10,7 @@ allowed-tools:
 # /vibe-model-pick
 
 Extract the alias from the user's arguments, then run:
-`echo <alias> > ~/.local/share/vibe-model.flag`
+`mkdir -p .delegate && echo <alias> > .delegate/model.flag`
 
 Confirm: "Model override set to <alias> — all Vibe runs will use this model until /vibe-model-clear."
 

@@ -8,3 +8,6 @@
 .delegate/sessions/
 .delegate/failures.jsonl
 .delegate/learnings.jsonl
+.delegate/auto.flag
+.delegate/model.flag
+.delegate/mode.flag

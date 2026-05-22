@@ -9,6 +9,6 @@ allowed-tools:
 
 # /vibe-model-clear
 
-Run: `rm -f ~/.local/share/vibe-model.flag`
+Run: `rm -f .delegate/model.flag`
 
 Confirm: "Model override cleared — Vibe will use the config default."

@@ -9,6 +9,6 @@ allowed-tools:
 
 # /vibeoff
 
-Run: `rm -f ~/.local/share/vibe-auto.flag`
+Run: `rm -f .delegate/auto.flag`
 
 Then confirm: "Auto-vibe OFF — Claude will handle coding tasks directly."

@@ -5,6 +5,6 @@ description: Disable auto-delegate mode — coding tasks are handled directly un
 
 # $vibeoff
 
-Run: `rm -f ~/.local/share/vibe-auto.flag`
+Run: `rm -f .delegate/auto.flag`
 
 Then confirm: "Auto-vibe OFF — coding tasks will be handled directly."

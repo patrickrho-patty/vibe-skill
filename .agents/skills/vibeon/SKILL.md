@@ -5,6 +5,6 @@ description: Enable auto-delegate mode — all coding tasks are automatically se
 
 # $vibeon
 
-Run: `touch ~/.local/share/vibe-auto.flag`
+Run: `mkdir -p .delegate && touch .delegate/auto.flag`
 
 Then confirm: "Auto-vibe ON — every coding request will be delegated automatically."

@@ -9,6 +9,6 @@ allowed-tools:
 
 # /vibeon
 
-Run: `touch ~/.local/share/vibe-auto.flag`
+Run: `mkdir -p .delegate && touch .delegate/auto.flag`
 
 Then confirm: "Auto-vibe ON — every coding request will be delegated to Vibe automatically."

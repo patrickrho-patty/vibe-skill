@@ -22,8 +22,8 @@ requiring `/vibe` each time.
 
 | Command | Action |
 |---------|--------|
-| `/vibeon` | `touch ~/.local/share/vibe-auto.flag` → confirm "Auto-vibe ON" |
-| `/vibeoff` | `rm -f ~/.local/share/vibe-auto.flag` → confirm "Auto-vibe OFF" |
+| `/vibeon` | `mkdir -p .delegate && touch .delegate/auto.flag` → confirm "Auto-vibe ON" |
+| `/vibeoff` | `rm -f .delegate/auto.flag` → confirm "Auto-vibe OFF" |
 | `/vibestatus` | report auto-mode (ON/OFF) **and** active model override |
 
 For `/vibestatus`, run both checks and print two lines:
@@ -56,8 +56,8 @@ Works via `VIBE_ACTIVE_MODEL` env var, which Vibe respects over the config file.
 
 | Command | Action |
 |---------|--------|
-| `/vibe-model-pick <alias>` | `echo <alias> > ~/.local/share/vibe-model.flag` → confirm |
-| `/vibe-model-clear` | `rm -f ~/.local/share/vibe-model.flag` → confirm "back to config default" |
+| `/vibe-model-pick <alias>` | `mkdir -p .delegate && echo <alias> > .delegate/model.flag` → confirm |
+| `/vibe-model-clear` | `rm -f .delegate/model.flag` → confirm "back to config default" |
 
 **Available aliases** (from `~/.vibe/config.toml`):
 
@@ -99,7 +99,7 @@ a task, or pick manually. Default is `vibe` until routing data accumulates.
 When the user invokes `/vibe <instruction>` or `/delegate <harness> <instruction>`,
 the orchestrator first checks for an active mode:
 
-1. Run: `cat ~/.local/share/vibe-mode.flag 2>/dev/null`
+1. Run: `cat .delegate/mode.flag 2>/dev/null`
 2. If a mode is set:
    - Look for `.claude/vibe-skill/.delegate/chains/<mode>.yaml`
    - If found: run `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" "<chain-yaml>"`
@@ -151,7 +151,7 @@ TOML pricing lookup → git diff → JSON log`. Each link can fail independently
 | Stream parser | Vibe changes its JSON schema | Tool calls not detected, wrong token count |
 | TOML pricing | `config.toml` missing or renamed | Falls back to Mistral Medium 3.5 rates |
 | git diff | Not a git repo, or Vibe committed mid-run | Wrong file count, misleading stat |
-| JSON log | `~/.local/share/` not writable | Silent log skip, `/vibe-report` misses the run |
+| JSON log | `.delegate/` not writable | Silent log skip, `/vibe-report` misses the run |
 
 When a run produces unexpected results, check these links in order from top to bottom.
 
@@ -362,7 +362,7 @@ Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x2.0)
 
 === UNCOMMITTED CHANGES ===
  app.py | 4 ++--
-[log] → ~/.local/share/delegate-runs.jsonl  (4800 tokens, exit 0, 34.2s)
+[log] → .delegate/runs.jsonl  (4800 tokens, exit 0, 34.2s)
 ```
 
 **Vibe never commits.** All changes are left unstaged — `git checkout .` reverts everything if needed.
@@ -464,7 +464,7 @@ entry = {
     'cost_usd': round(cost, 6), 'cost_estimated': True,
     'lines_added': lines_added,
 }
-log = os.path.expanduser('~/.local/share/delegate-runs.jsonl')
+log = os.path.join(workdir, '.delegate', 'runs.jsonl')
 with open(log, 'a') as f:
     f.write(json.dumps(entry) + '\n')
 print(f'[log] claude-manual → {project}  ~{lines_added} lines added  est. cost \${cost:.4f}')
@@ -527,7 +527,7 @@ Real token counts and cost are printed after every run and appended to the run l
 
 ## Run Log
 
-Every run appends one JSON entry to `~/.local/share/delegate-runs.jsonl`.
+Every run appends one JSON entry to `.delegate/runs.jsonl` in the project directory.
 
 **Fields logged:**
 
@@ -571,14 +571,14 @@ Or via Claude Code: `/vibe-report [args]`
 **Raw jq queries:**
 ```bash
 # Success rate
-jq -r '.exit_code' ~/.local/share/delegate-runs.jsonl | sort | uniq -c
+jq -r '.exit_code' .delegate/runs.jsonl | sort | uniq -c
 
 # Total cost vs Claude equivalent
-jq -r '[.cost_usd, .cost_claude_eq] | @tsv' ~/.local/share/delegate-runs.jsonl \
+jq -r '[.cost_usd, .cost_claude_eq] | @tsv' .delegate/runs.jsonl \
   | awk '{c+=$1; e+=$2} END {printf "Spent: $%.4f  Claude eq: $%.4f  Saved: $%.4f\n", c, e, e-c}'
 
 # Runs with search_replace failures
-jq 'select(.search_replace_fails > 0)' ~/.local/share/delegate-runs.jsonl
+jq 'select(.search_replace_fails > 0)' .delegate/runs.jsonl
 ```
 
 ---

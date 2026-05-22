@@ -4,7 +4,7 @@ delegate-replay — replay a recorded delegation session step-by-step
 Usage: delegate-replay <session-file> [--turn N] [--errors]
 
 Arguments:
-  session-file   Path to a .jsonl session file (from ~/.local/share/delegate-sessions/).
+  session-file   Path to a .jsonl session file (from .delegate/sessions/).
   --turn N       Show only events from turn N.
   --errors       Show only error-related events and turns.
 """

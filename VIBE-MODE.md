@@ -24,11 +24,11 @@ When the user says `/vibe-mode <mode>`:
    `multi-harness-implement.yaml` → mode `multi-harness-implement`).
 
 2. If mode is `simple` or `clear`:
-   - Run: `rm -f ~/.local/share/vibe-mode.flag`
+   - Run: `rm -f .delegate/mode.flag`
    - Confirm: "Mode: simple (direct delegation, no chain)"
 
 3. If mode matches a chain file:
-   - Run: `echo <mode> > ~/.local/share/vibe-mode.flag`
+   - Run: `echo <mode> > .delegate/mode.flag`
    - To show what the chain does, read the `description:` line from the YAML:
      ```bash
      grep '^description:' .claude/vibe-skill/.delegate/chains/<mode>.yaml
@@ -41,12 +41,12 @@ When the user says `/vibe-mode <mode>`:
    - Do NOT set the flag
 
 5. If no mode is provided, show current mode and list all available:
-   - Current: `cat ~/.local/share/vibe-mode.flag 2>/dev/null || echo "simple"`
+   - Current: `cat .delegate/mode.flag 2>/dev/null || echo "simple"`
    - List all chain files as above
 
 ## How it integrates
 
-When `/vibe <task>` is invoked and `~/.local/share/vibe-mode.flag` exists:
+When `/vibe <task>` is invoked and `.delegate/mode.flag` exists:
 
 - Read the mode name from the flag file
 - Look for `.claude/vibe-skill/.delegate/chains/<mode>.yaml`
