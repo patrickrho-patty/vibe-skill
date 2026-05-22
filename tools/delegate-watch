@@ -48,11 +48,11 @@ def read_model(workdir: str) -> str:
             if lines:
                 last = json.loads(lines[-1])
                 m = last.get('model', '')
-                if m and m != 'codex-unknown':
+                if m:
                     return m
         except Exception:
             pass
-    return ''
+    return 'unknown'
 
 
 def parse_session(session_file: str, workdir: str = '') -> dict:
