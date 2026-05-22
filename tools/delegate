@@ -17,12 +17,18 @@
 #           cost_usd, model, warn_count, search_replace_fails, cost_claude_eq,
 #           wrote_nothing.
 
-HARNESS="${1:?Usage: delegate <harness> <workdir> <prompt> [max-turns] [agent] [timeout-secs]}"
+HARNESS="${1:?Usage: delegate <harness> <workdir> <prompt> [max-turns] [agent]}"
 WORKDIR="${2:?Workdir required}"
 PROMPT="${3:?Prompt required}"
 MAX_TURNS="${4:-10}"
 AGENT="${5:-}"
-TIMEOUT_SECS="${6:-600}"
+
+# Timeout is NOT configurable via CLI — read from .delegate/config or use default
+# This prevents orchestrators from setting short timeouts that cause failures
+TIMEOUT_SECS=600
+if [ -f "$2/.delegate/timeout" ]; then
+  TIMEOUT_SECS=$(tr -d '[:space:]' < "$2/.delegate/timeout")
+fi
 
 # Validate harness
 ADAPTER_DIR="$(cd "$(dirname "$0")/adapters" 2>/dev/null && pwd)"

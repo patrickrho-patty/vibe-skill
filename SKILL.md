@@ -557,14 +557,27 @@ Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x2.0)
 
 ## Step 6 — Review and Correct (Reject-Correct Loop)
 
-**Critical rule: the orchestrator NEVER writes code itself during delegation.**
-Its only actions are: review the diff, write correction prompts, send back to harness.
+**Critical rules — DO NOT VIOLATE:**
+
+1. **NEVER write code yourself.** The orchestrator's only actions are: plan,
+   review diffs, write correction prompts, and send them back to the harness.
+
+2. **NEVER call `delegate` directly.** Always use `delegate-chain` with a chain
+   YAML. Direct `delegate` calls bypass the chain's model routing, timeout config,
+   and step orchestration. If you need a simple one-shot delegation, use the
+   `quick` chain.
+
+3. **NEVER set the timeout.** The timeout is hardcoded at 600s and read from
+   `.delegate/timeout` if the user overrides it. You cannot pass a timeout arg.
+
+4. **NEVER bypass the chain to "do it faster."** That burns SOTA tokens on coding
+   work — the exact thing this framework prevents.
 
 **On timeout:** If a delegation times out, DO NOT implement the task yourself.
 Instead:
 1. Check if the delegate made partial progress (`git diff --stat`)
-2. If partial progress: send a correction to finish the remaining work
-3. If no progress: retry with a simpler decomposition or longer timeout
+2. If partial progress: send a correction to finish the remaining work via chain
+3. If no progress: decompose into smaller subtasks, each as a separate chain run
 4. NEVER say "I'll implement it directly" — that defeats the entire purpose
 
 After the delegate finishes, classify the result:
