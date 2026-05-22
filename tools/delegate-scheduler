@@ -528,41 +528,51 @@ def cmd_run(workdir: Path, job_names: list) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def resolve_workdir(args: list) -> tuple:
+    """Extract workdir from args, defaulting to cwd. Returns (workdir, remaining_args)."""
+    remaining = list(args)
+    workdir = Path.cwd()
+    if remaining and not remaining[0].startswith('-'):
+        candidate = Path(remaining[0])
+        if candidate.is_dir():
+            workdir = candidate.resolve()
+            remaining.pop(0)
+    return workdir, remaining
+
+
 def main() -> None:
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         print(__doc__)
         print("\nSubcommands:")
-        print("  start <workdir> [--only job1,job2]   Start scheduler daemon")
-        print("  stop <workdir>                       Stop scheduler daemon")
-        print("  status <workdir>                     Show job status")
-        print("  config <workdir>                     Show scheduler config")
-        print("  run <workdir> <job1> [job2] [job3]   Run specific jobs once")
-        print("  ps <workdir>                         Show all processes for this project")
-        print("  kill-all <workdir>                   Kill all delegate processes for this project")
+        print("  start [--only job1,job2]   Start scheduler daemon")
+        print("  stop                       Stop scheduler daemon")
+        print("  status                     Show job status")
+        print("  config                     Show scheduler config")
+        print("  run <job1> [job2] [job3]   Run specific jobs once")
+        print("  ps                         Show all processes for this project")
+        print("  kill-all                   Kill all delegate processes for this project")
         print("\nJobs: audit, research, knowledge_update")
         print("\nExamples:")
-        print("  delegate-scheduler start .                      # all jobs")
-        print("  delegate-scheduler start . --only audit,research")
-        print("  delegate-scheduler run . audit                  # one-shot audit")
-        print("  delegate-scheduler run . audit research         # one-shot both")
-        print("  delegate-scheduler ps .                         # what's running?")
-        print("  delegate-scheduler kill-all .                   # stop everything")
+        print("  delegate-scheduler start                        # all jobs")
+        print("  delegate-scheduler start --only audit,research")
+        print("  delegate-scheduler run audit                    # one-shot audit")
+        print("  delegate-scheduler run audit research           # one-shot both")
+        print("  delegate-scheduler ps                           # what's running?")
+        print("  delegate-scheduler kill-all                     # stop everything")
         sys.exit(1)
 
     subcommand = sys.argv[1]
-    workdir = Path(sys.argv[2]).resolve()
+    workdir, rest = resolve_workdir(sys.argv[2:])
 
     if subcommand == 'run':
-        job_names = sys.argv[3:]
-        cmd_run(workdir, job_names)
+        cmd_run(workdir, rest)
         return
 
     if subcommand == 'start':
-        # Check for --only flag
         only_jobs = None
-        for i, arg in enumerate(sys.argv[3:], 3):
-            if arg == '--only' and i + 1 < len(sys.argv):
-                only_jobs = sys.argv[i + 1].split(',')
+        for i, arg in enumerate(rest):
+            if arg == '--only' and i + 1 < len(rest):
+                only_jobs = rest[i + 1].split(',')
                 break
         if only_jobs is not None:
             os.environ['DELEGATE_SCHEDULER_ONLY'] = ','.join(only_jobs)

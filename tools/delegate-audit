@@ -164,7 +164,7 @@ def run_codex_audit(workdir: str, prompt: str, model: str = DEFAULT_MODEL) -> st
         cmd += ['-m', model]
     cmd.append(prompt)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         return result.stdout
     except FileNotFoundError:
         print('ERROR: codex not found in PATH. Install codex CLI first.', file=sys.stderr)
@@ -208,12 +208,21 @@ def parse_codex_output(output: str) -> list:
         except json.JSONDecodeError:
             continue
 
-        # Handle different event shapes from codex --json output
-        # Common shapes: {"type": "message", "role": "assistant", "content": "..."}
-        # or {"type": "content_block_delta", "delta": {"text": "..."}}
-        # or {"role": "assistant", "content": "..."}
-        event_type = event.get('type', '')
+        if not isinstance(event, dict):
+            continue
 
+        # Codex JSON format: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+        item = event.get('item', {})
+        if isinstance(item, dict):
+            itype = item.get('type', '')
+            if itype in ('message', 'text', 'agent_message'):
+                t = item.get('text', '')
+                if t:
+                    assistant_text_parts.append(t)
+                    continue
+
+        # Fallback formats
+        event_type = event.get('type', '')
         if event_type in ('message', 'assistant_message') and event.get('role') == 'assistant':
             content = event.get('content', '')
             if isinstance(content, str):
@@ -222,20 +231,10 @@ def parse_codex_output(output: str) -> list:
                 for block in content:
                     if isinstance(block, dict) and block.get('type') == 'text':
                         assistant_text_parts.append(block.get('text', ''))
-
-        elif event_type == 'content_block_delta':
-            delta = event.get('delta', {})
-            if delta.get('type') == 'text_delta':
-                assistant_text_parts.append(delta.get('text', ''))
-
         elif event.get('role') == 'assistant':
             content = event.get('content', '')
             if isinstance(content, str):
                 assistant_text_parts.append(content)
-
-        # Some codex versions emit a top-level "output" field
-        elif 'output' in event and isinstance(event['output'], str):
-            assistant_text_parts.append(event['output'])
 
     full_text = ''.join(assistant_text_parts).strip()
     if full_text:
@@ -281,27 +280,27 @@ RULES:
 
 # ── Subcommands ──────────────────────────────────────────────────────────────
 
-def cmd_scan(args: list) -> int:
-    if not args:
-        print('Usage: delegate-audit scan <workdir> [--file <path>] [--model <model>]', file=sys.stderr)
-        return 1
+def _resolve_workdir(args: list) -> tuple:
+    """Extract workdir from args, defaulting to cwd. Returns (workdir, remaining_args)."""
+    if args and not args[0].startswith('-') and Path(args[0]).is_dir():
+        return args[0], args[1:]
+    return os.getcwd(), list(args)
 
-    workdir = args[0]
-    if not Path(workdir).is_dir():
-        print(f'ERROR: workdir {workdir!r} does not exist', file=sys.stderr)
-        return 1
+
+def cmd_scan(args: list) -> int:
+    workdir, rest = _resolve_workdir(args)
 
     # Parse flags
     single_file = None
     model = os.environ.get('DELEGATE_AUDIT_MODEL', DEFAULT_MODEL)
 
-    i = 1
-    while i < len(args):
-        if args[i] == '--file' and i + 1 < len(args):
-            single_file = args[i + 1]
+    i = 0
+    while i < len(rest):
+        if rest[i] == '--file' and i + 1 < len(rest):
+            single_file = rest[i + 1]
             i += 2
-        elif args[i] == '--model' and i + 1 < len(args):
-            model = args[i + 1]
+        elif rest[i] == '--model' and i + 1 < len(rest):
+            model = rest[i + 1]
             i += 2
         else:
             i += 1
@@ -402,21 +401,17 @@ def cmd_scan(args: list) -> int:
 
 
 def cmd_list(args: list) -> int:
-    if not args:
-        print('Usage: delegate-audit list <workdir> [--severity <level>] [--file <path>]', file=sys.stderr)
-        return 1
-
-    workdir = args[0]
+    workdir, rest = _resolve_workdir(args)
     severity_filter = None
     file_filter = None
 
-    i = 1
-    while i < len(args):
-        if args[i] == '--severity' and i + 1 < len(args):
-            severity_filter = args[i + 1].lower()
+    i = 0
+    while i < len(rest):
+        if rest[i] == '--severity' and i + 1 < len(rest):
+            severity_filter = rest[i + 1].lower()
             i += 2
-        elif args[i] == '--file' and i + 1 < len(args):
-            file_filter = args[i + 1]
+        elif rest[i] == '--file' and i + 1 < len(rest):
+            file_filter = rest[i + 1]
             i += 2
         else:
             i += 1
@@ -465,25 +460,24 @@ def _update_finding_status(workdir: str, finding_id: str, status: str, ts_field:
 
 
 def cmd_resolve(args: list) -> int:
-    if len(args) < 2:
-        print('Usage: delegate-audit resolve <workdir> <finding-id>', file=sys.stderr)
+    workdir, rest = _resolve_workdir(args)
+    if not rest:
+        print('Usage: delegate-audit resolve [workdir] <finding-id>', file=sys.stderr)
         return 1
-    return _update_finding_status(args[0], args[1], 'resolved', 'resolved_at')
+    return _update_finding_status(workdir, rest[0], 'resolved', 'resolved_at')
 
 
 def cmd_dismiss(args: list) -> int:
-    if len(args) < 2:
-        print('Usage: delegate-audit dismiss <workdir> <finding-id>', file=sys.stderr)
+    workdir, rest = _resolve_workdir(args)
+    if not rest:
+        print('Usage: delegate-audit dismiss [workdir] <finding-id>', file=sys.stderr)
         return 1
-    return _update_finding_status(args[0], args[1], 'dismissed', 'dismissed_at')
+    return _update_finding_status(workdir, rest[0], 'dismissed', 'dismissed_at')
 
 
 def cmd_prune(args: list) -> int:
-    if not args:
-        print('Usage: delegate-audit prune <workdir>', file=sys.stderr)
-        return 1
-
-    workdir = args[0]
+    args = list(args) if not args else args
+    workdir, _ = _resolve_workdir(args)
     findings = load_findings(workdir)
     now = datetime.now(timezone.utc)
     threshold_open = now - timedelta(days=7)
@@ -516,11 +510,7 @@ def cmd_prune(args: list) -> int:
 
 
 def cmd_stats(args: list) -> int:
-    if not args:
-        print('Usage: delegate-audit stats <workdir>', file=sys.stderr)
-        return 1
-
-    workdir = args[0]
+    workdir, _ = _resolve_workdir(args)
     findings = load_findings(workdir)
     open_findings = [f for f in findings if f.get('status') == 'open']
 

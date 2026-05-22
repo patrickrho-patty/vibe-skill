@@ -2,7 +2,7 @@
 # delegate — Generic entry point for AI coding agent delegation
 # Usage: delegate <harness> <workdir> <prompt> [max-turns] [agent] [timeout-secs]
 #
-# Supported harnesses: vibe, pi, opencode
+# Supported harnesses: codex, vibe, pi, opencode
 #
 # PROMPT SAFETY (2026-05-12):
 #   Long prompts with Python code, dicts, colons, emojis, or accented chars are
@@ -34,7 +34,7 @@ fi
 ADAPTER_DIR="$(cd "$(dirname "$0")/adapters" 2>/dev/null && pwd)"
 if [ -z "$ADAPTER_DIR" ] || [ ! -f "$ADAPTER_DIR/$HARNESS" ]; then
   echo "ERROR: unknown harness '$HARNESS' — no adapter found at $ADAPTER_DIR/$HARNESS" >&2
-  echo "Available harnesses: vibe, pi, opencode" >&2
+  echo "Available harnesses: codex, vibe, pi, opencode" >&2
   exit 1
 fi
 

@@ -155,7 +155,12 @@ def extract_text_from_codex_json(stdout: str) -> str:
         except json.JSONDecodeError:
             continue
         item = event.get('item', {})
-        if item.get('type') == 'message':
+        itype = item.get('type', '')
+        if itype in ('message', 'text', 'agent_message'):
+            text = item.get('text', '')
+            if text:
+                text_parts.append(text)
+                continue
             content = item.get('content', [])
             if isinstance(content, list):
                 for c in content:
@@ -188,6 +193,7 @@ def run_codex(workdir: Path, prompt: str, model_override: str = None) -> str:
             capture_output=True,
             text=True,
             timeout=300,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         print('Error: codex exec timed out', file=sys.stderr)
@@ -326,12 +332,16 @@ def cmd_check(workdir: Path):
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         print(__doc__.strip())
         sys.exit(1)
 
     subcommand = sys.argv[1]
-    workdir = Path(sys.argv[2]).resolve()
+    rest = sys.argv[2:]
+    if rest and not rest[0].startswith('-') and Path(rest[0]).is_dir():
+        workdir = Path(rest[0]).resolve()
+    else:
+        workdir = Path.cwd()
 
     if not workdir.exists():
         print(f'Error: workdir does not exist: {workdir}', file=sys.stderr)

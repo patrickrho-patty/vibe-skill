@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""
+jina-search — Web search and page reader via JINA API.
+
+Usage:
+  jina-search search <query>              Search the web
+  jina-search read <url>                  Read/extract a page
+  jina-search search <query> --read N     Search + deep-read top N results (default: 2)
+
+Reads JINA_API_KEY from .env in the current directory or parents.
+Output goes to stdout as plain text.
+"""
+import os
+import sys
+import subprocess
+import urllib.parse
+import re
+from pathlib import Path
+
+SEARCH_URL = "https://s.jina.ai/"
+READ_URL = "https://r.jina.ai/"
+
+
+def find_api_key() -> str:
+    key = os.environ.get('JINA_API_KEY', '')
+    if key:
+        return key.strip().strip('"').strip("'")
+
+    d = Path.cwd()
+    for _ in range(10):
+        env_file = d / '.env'
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith('#'):
+                    continue
+                if line.startswith('JINA_API_KEY'):
+                    _, _, val = line.partition('=')
+                    return val.strip().strip('"').strip("'")
+        parent = d.parent
+        if parent == d:
+            break
+        d = parent
+    return ''
+
+
+def jina_request(url: str, api_key: str, timeout: int = 30) -> str:
+    auth = api_key if api_key.startswith('Bearer ') else f'Bearer {api_key}'
+    try:
+        result = subprocess.run(
+            ['curl', '-s', '-m', str(timeout),
+             '-H', 'Accept: text/plain',
+             '-H', f'Authorization: {auth}',
+             url],
+            capture_output=True, text=True, timeout=timeout + 5
+        )
+        if result.returncode != 0:
+            return f"Error: curl exit {result.returncode}: {result.stderr[:200]}"
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        return "Error: request timed out"
+    except FileNotFoundError:
+        return "Error: curl not found"
+
+
+def search(query: str, api_key: str, max_chars: int = 8000) -> str:
+    url = SEARCH_URL + urllib.parse.quote(query)
+    return jina_request(url, api_key)[:max_chars]
+
+
+def read_page(url: str, api_key: str, max_chars: int = 4000) -> str:
+    reader_url = READ_URL + url
+    return jina_request(reader_url, api_key)[:max_chars]
+
+
+def extract_urls(text: str, exclude_domains: set = None) -> list:
+    exclude = exclude_domains or {'jina.ai'}
+    urls = re.findall(r'https?://[^\s\)\"\'>\]]+', text)
+    seen = set()
+    unique = []
+    for u in urls:
+        if u not in seen and not any(d in u for d in exclude):
+            seen.add(u)
+            unique.append(u)
+    return unique
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__.strip())
+        sys.exit(1)
+
+    api_key = find_api_key()
+    if not api_key:
+        print("Error: JINA_API_KEY not found in environment or .env file", file=sys.stderr)
+        sys.exit(1)
+
+    subcmd = args[0]
+
+    if subcmd == 'search':
+        if len(args) < 2:
+            print("Usage: jina-search search <query> [--read N]", file=sys.stderr)
+            sys.exit(1)
+
+        read_n = 0
+        query_parts = []
+        i = 1
+        while i < len(args):
+            if args[i] == '--read':
+                read_n = int(args[i + 1]) if i + 1 < len(args) else 2
+                i += 2
+            else:
+                query_parts.append(args[i])
+                i += 1
+
+        query = ' '.join(query_parts)
+        result = search(query, api_key)
+        print(result)
+
+        if read_n > 0:
+            urls = extract_urls(result)
+            for url in urls[:read_n]:
+                print(f"\n{'='*60}")
+                print(f"DEEP READ: {url}")
+                print('='*60)
+                page = read_page(url, api_key)
+                print(page)
+
+    elif subcmd == 'read':
+        if len(args) < 2:
+            print("Usage: jina-search read <url>", file=sys.stderr)
+            sys.exit(1)
+        print(read_page(args[1], api_key))
+
+    else:
+        print(f"Unknown subcommand: {subcmd}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

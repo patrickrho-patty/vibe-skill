@@ -157,11 +157,11 @@ def check_duplicate_imports(content: str, filepath: str) -> list:
     return issues
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: delegate-check-duplicates <workdir>", file=sys.stderr)
-        sys.exit(1)
-
-    workdir = sys.argv[1]
+    args = sys.argv[1:]
+    if args and not args[0].startswith('-') and os.path.isdir(args[0]):
+        workdir = args[0]
+    else:
+        workdir = os.getcwd()
     files = get_modified_files(workdir)
 
     all_issues = []

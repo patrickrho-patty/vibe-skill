@@ -17,14 +17,12 @@ import fcntl
 import hashlib
 import subprocess
 import time
-import urllib.request
-import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL = 'glm/glm-5.1'
+DEFAULT_MODEL = 'minimax/MiniMax-M2.7'
 
 FILE_EXTENSIONS = {
     '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.kt',
@@ -38,46 +36,50 @@ SKIP_DIRS = {
     '.git', '.svn', '__pycache__', 'node_modules', '.venv', 'venv',
     '.env', 'dist', 'build', '.next', '.nuxt', 'target', 'vendor',
     '.delegate', '.cache', 'coverage', '.pytest_cache', '.mypy_cache',
+    '.claude', '.codex', '.agents',
 }
 
-# ── JINA integration ──────────────────────────────────────────────────────────
+# ── JINA integration (via jina-search script) ────────────────────────────────
+
+JINA_SCRIPT = str(Path(__file__).resolve().parent / 'jina-search')
+
 
 def jina_search(query: str) -> str:
-    """Search via JINA. Returns markdown search results."""
-    url = f"https://s.jina.ai/{urllib.parse.quote(query)}"
+    """Search via JINA using the jina-search script."""
     try:
-        req = urllib.request.Request(url, headers={'Accept': 'text/plain'})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.read().decode('utf-8', errors='replace')[:8000]
+        result = subprocess.run(
+            ['python3', JINA_SCRIPT, 'search', query],
+            capture_output=True, text=True, timeout=45
+        )
+        return result.stdout[:8000] if result.returncode == 0 else f"Search failed: {result.stderr[:200]}"
     except Exception as e:
         return f"Search failed: {e}"
 
 
 def jina_search_with_retry(query: str) -> str:
-    """Search via JINA with one retry on failure (429 rate limit → 5s wait)."""
     result = jina_search(query)
-    if 'rate limit' in result.lower() or '429' in result or 'Search failed' in result:
-        time.sleep(5)
+    if 'Search failed' in result or 'Error' in result:
+        time.sleep(3)
         result = jina_search(query)
     return result
 
 
 def jina_read(url: str) -> str:
-    """Read a URL via JINA reader. Returns markdown of the page."""
-    reader_url = f"https://r.jina.ai/{url}"
+    """Read a URL via JINA using the jina-search script."""
     try:
-        req = urllib.request.Request(reader_url, headers={'Accept': 'text/plain'})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.read().decode('utf-8', errors='replace')[:4000]
+        result = subprocess.run(
+            ['python3', JINA_SCRIPT, 'read', url],
+            capture_output=True, text=True, timeout=45
+        )
+        return result.stdout[:4000] if result.returncode == 0 else f"Read failed: {result.stderr[:200]}"
     except Exception as e:
         return f"Read failed: {e}"
 
 
 def jina_read_with_retry(url: str) -> str:
-    """Read a URL via JINA with one retry on failure."""
     result = jina_read(url)
-    if 'rate limit' in result.lower() or '429' in result or 'Read failed' in result:
-        time.sleep(5)
+    if 'Read failed' in result or 'Error' in result:
+        time.sleep(3)
         result = jina_read(url)
     return result
 
@@ -186,30 +188,38 @@ def extract_text(output: str) -> str:
             continue
         try:
             obj = json.loads(line)
-            # Handle various codex JSON output formats
-            if isinstance(obj, dict):
-                if 'content' in obj:
-                    content = obj['content']
-                    if isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and item.get('type') == 'output_text':
-                                text_parts.append(item.get('text', ''))
-                    elif isinstance(content, str):
-                        text_parts.append(content)
-                elif 'text' in obj:
-                    text_parts.append(obj['text'])
-                elif 'message' in obj:
-                    msg = obj['message']
-                    if isinstance(msg, dict):
-                        for c in msg.get('content', []):
-                            if isinstance(c, dict) and c.get('type') == 'text':
-                                text_parts.append(c.get('text', ''))
-                    elif isinstance(msg, str):
-                        text_parts.append(msg)
+            if not isinstance(obj, dict):
+                continue
+            # Codex JSON format: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+            item = obj.get('item', {})
+            if isinstance(item, dict):
+                itype = item.get('type', '')
+                if itype in ('message', 'text', 'agent_message'):
+                    t = item.get('text', '')
+                    if t:
+                        text_parts.append(t)
+                        continue
+            # Fallback: top-level content/text/message
+            if 'content' in obj:
+                content = obj['content']
+                if isinstance(content, list):
+                    for c in content:
+                        if isinstance(c, dict) and c.get('type') == 'output_text':
+                            text_parts.append(c.get('text', ''))
+                elif isinstance(content, str):
+                    text_parts.append(content)
+            elif 'text' in obj:
+                text_parts.append(obj['text'])
+            elif 'message' in obj:
+                msg = obj['message']
+                if isinstance(msg, dict):
+                    for c in msg.get('content', []):
+                        if isinstance(c, dict) and c.get('type') == 'text':
+                            text_parts.append(c.get('text', ''))
+                elif isinstance(msg, str):
+                    text_parts.append(msg)
         except (json.JSONDecodeError, TypeError):
-            # Non-JSON lines might be plain text output
-            if line and not line.startswith('[') and not line.startswith('{'):
-                text_parts.append(line)
+            pass
     return '\n'.join(text_parts).strip()
 
 
@@ -222,7 +232,7 @@ def run_codex(workdir: str, prompt: str, model: str = DEFAULT_MODEL) -> str:
         cmd += ['-m', model]
     cmd.append(prompt)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
         return extract_text(result.stdout)
     except FileNotFoundError:
         print("Warning: 'codex' not found in PATH. Skipping model calls.", file=sys.stderr)
@@ -283,14 +293,16 @@ Maximum 5 topics per file. Output ONLY the JSON."""
 def build_findings_prompt(filepath: str, topics_and_results: list, existing_findings: list) -> str:
     sections = []
     for item in topics_and_results:
+        search = item.get('search', '')[:2000]
+        deep = item.get('deep_read', '')[:3000]
         sections.append(
             f"### {item['topic']}\n"
-            f"Search results:\n{item.get('search', '')}\n"
-            f"Deep read:\n{item.get('deep_read', '')}\n"
+            f"Search results:\n{search}\n"
+            f"Deep read:\n{deep}\n"
         )
     topics_str = '\n'.join(sections)
     existing_context = format_existing_research(existing_findings, filepath)
-    return f"""You researched these topics for {filepath}. Based on the search results, produce actionable findings.
+    return f"""You researched these topics for {filepath}. Based on the search results, produce detailed, well-cited findings.
 
 EXISTING RESEARCH (already found — with dates):
 {existing_context}
@@ -303,45 +315,65 @@ Return a JSON array of findings:
   "file": "{filepath}",
   "topic": "<what was researched>",
   "category": "optimization|security|bugfix|feature|upgrade|pattern",
-  "finding": "<detailed recommendation with specific actions>",
+  "finding": "<DETAILED multi-paragraph analysis — see rules below>",
   "sources": ["<url1>", "<url2>"],
   "severity": "low|medium|high",
   "effort": "trivial|small|medium|large",
   "novelty": "new|update|duplicate"
 }}]
 
+FINDING FORMAT — each finding's "finding" field MUST contain:
+1. **Current state**: What the code does now and why it matters (1-2 sentences)
+2. **What the research says**: Detailed explanation of the best practice, technique,
+   or improvement found. Cite sources INLINE using [N] notation matching the sources
+   array, e.g. "According to [1], bootstrap iterations below 1000 produce unreliable
+   CIs for heavy-tailed distributions." Include specific numbers, thresholds,
+   benchmarks, or code patterns from the sources.
+3. **Recommended action**: Concrete steps to implement. Reference exact function
+   names, parameters, or code patterns. e.g. "Change `bootstrap_iters=10` to
+   `bootstrap_iters=1000` in `_monitor_selection_score()`."
+4. **Expected impact**: What improves and by how much (if the sources quantify it).
+
+Each finding should be 150-300 words. Shallow findings like "consider using X"
+without evidence or specifics will be rejected by the quality gate.
+
 RULES:
-- Only actionable findings with concrete recommendations
-- Include source URLs for every claim
-- For each finding, classify its novelty:
-  - "new": topic not previously researched, or entirely new technique
-  - "update": same topic as existing research, but NEWER information (newer
-    paper, newer version, newer benchmark published after the existing date)
-  - "duplicate": same information as existing research, no new insight
+- Every factual claim MUST have an inline citation [N] matching a URL in sources
+- sources array: include the actual URLs you are citing (not "local" or made-up URLs)
+- Classify novelty: "new" (not previously researched), "update" (newer info than
+  existing), "duplicate" (same as existing — DO NOT include these)
 - ONLY include findings where novelty is "new" or "update"
-- DO NOT include "duplicate" findings
-- For "update" findings: mention what changed since the previous research
+- For "update" findings: explain what changed since the previous research
 - Output ONLY the JSON"""
 
 
 # ── JSON extraction ───────────────────────────────────────────────────────────
 
 def extract_json_array(text: str) -> list:
-    """Extract a JSON array from model output, tolerating markdown fences."""
+    """Extract a JSON array from model output, tolerating markdown fences and truncation."""
     if not text:
         return []
-    # Strip markdown fences
-    text = re.sub(r'```(?:json)?\s*', '', text)
-    text = text.strip()
-    # Try to find array boundaries
+    text = re.sub(r'```(?:json)?\s*', '', text).strip()
     start = text.find('[')
+    if start == -1:
+        return []
     end = text.rfind(']')
-    if start == -1 or end == -1:
-        return []
-    try:
-        return json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return []
+    if end != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    # Truncated JSON — try to salvage by closing brackets
+    fragment = text[start:]
+    # Find last complete object (ends with })
+    last_brace = fragment.rfind('}')
+    if last_brace > 0:
+        attempt = fragment[:last_brace + 1] + ']'
+        try:
+            return json.loads(attempt)
+        except json.JSONDecodeError:
+            pass
+    return []
 
 
 # ── Core per-file research flow ───────────────────────────────────────────────
@@ -381,9 +413,9 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
         print(f"  File not found: {filepath}", file=sys.stderr)
         return []
 
-    # Read file content (cap 8KB)
+    # Read file content (cap 3KB to leave room for model output)
     try:
-        file_content = fpath.read_text(errors='replace')[:8192]
+        file_content = fpath.read_text(errors='replace')[:3072]
     except Exception as e:
         print(f"  Could not read {filepath}: {e}", file=sys.stderr)
         return []
@@ -639,16 +671,30 @@ def cmd_list(workdir: str, category: str = '', severity: str = ''):
     print(f"{'=' * 72}")
 
     for f in open_findings:
-        print(f"\n[{f['id']}]  {f.get('severity', '?').upper()}  |  {f.get('category', '?')}  |  effort: {f.get('effort', '?')}")
-        print(f"  File:    {f.get('file', '?')}")
-        print(f"  Topic:   {f.get('topic', '?')}")
-        print(f"  Finding: {f.get('finding', '?')}")
+        sev = f.get('severity', '?').upper()
+        cat = f.get('category', '?')
+        effort = f.get('effort', '?')
+        fid = f.get('id', '?')
+        date = f.get('timestamp', '?')[:10]
+
+        print(f"\n{'─' * 72}")
+        print(f"  [{sev}] {f.get('topic', '?')}")
+        print(f"  {fid}  |  {cat}  |  effort: {effort}  |  {date}")
+        print(f"  File: {f.get('file', '?')}")
+        print(f"{'─' * 72}")
+
+        finding = f.get('finding', '?')
+        # Word-wrap the finding text at ~76 chars with indent
+        import textwrap
+        wrapped = textwrap.fill(finding, width=70, initial_indent='  ', subsequent_indent='  ')
+        print(wrapped)
+
         sources = f.get('sources', [])
         if sources:
-            print(f"  Sources:")
-            for src in sources:
-                print(f"    - {src}")
-        print(f"  Date:    {f.get('timestamp', '?')[:10]}")
+            print()
+            print("  References:")
+            for i, src in enumerate(sources, 1):
+                print(f"    [{i}] {src}")
 
     print(f"\n{'=' * 72}")
 
@@ -706,61 +752,62 @@ def main():
 
     subcmd = args[0]
 
+    rest = args[1:]
+
+    def _resolve_wd(a: list) -> tuple:
+        if a and not a[0].startswith('-') and os.path.isdir(a[0]):
+            return a[0], a[1:]
+        return os.getcwd(), list(a)
+
     if subcmd == 'scan':
-        if len(args) < 2:
-            print("Usage: delegate-research scan <workdir> [--file <path>] [--model <model>]", file=sys.stderr)
-            sys.exit(1)
-        workdir = args[1]
+        workdir, rest2 = _resolve_wd(rest)
         file_arg = ''
         model = ''
-        i = 2
-        while i < len(args):
-            if args[i] == '--file' and i + 1 < len(args):
-                file_arg = args[i + 1]
+        i = 0
+        while i < len(rest2):
+            if rest2[i] == '--file' and i + 1 < len(rest2):
+                file_arg = rest2[i + 1]
                 i += 2
-            elif args[i] == '--model' and i + 1 < len(args):
-                model = args[i + 1]
+            elif rest2[i] == '--model' and i + 1 < len(rest2):
+                model = rest2[i + 1]
                 i += 2
             else:
                 i += 1
         cmd_scan(workdir, file_arg, model)
 
     elif subcmd == 'list':
-        if len(args) < 2:
-            print("Usage: delegate-research list <workdir> [--category <cat>] [--severity <level>]", file=sys.stderr)
-            sys.exit(1)
-        workdir = args[1]
+        workdir, rest2 = _resolve_wd(rest)
         category = ''
         severity = ''
-        i = 2
-        while i < len(args):
-            if args[i] == '--category' and i + 1 < len(args):
-                category = args[i + 1]
+        i = 0
+        while i < len(rest2):
+            if rest2[i] == '--category' and i + 1 < len(rest2):
+                category = rest2[i + 1]
                 i += 2
-            elif args[i] == '--severity' and i + 1 < len(args):
-                severity = args[i + 1]
+            elif rest2[i] == '--severity' and i + 1 < len(rest2):
+                severity = rest2[i + 1]
                 i += 2
             else:
                 i += 1
         cmd_list(workdir, category, severity)
 
     elif subcmd == 'apply':
-        if len(args) < 3:
-            print("Usage: delegate-research apply <workdir> <finding-id>", file=sys.stderr)
+        workdir, rest2 = _resolve_wd(rest)
+        if not rest2:
+            print("Usage: delegate-research apply [workdir] <finding-id>", file=sys.stderr)
             sys.exit(1)
-        cmd_apply(args[1], args[2])
+        cmd_apply(workdir, rest2[0])
 
     elif subcmd == 'dismiss':
-        if len(args) < 3:
-            print("Usage: delegate-research dismiss <workdir> <finding-id>", file=sys.stderr)
+        workdir, rest2 = _resolve_wd(rest)
+        if not rest2:
+            print("Usage: delegate-research dismiss [workdir] <finding-id>", file=sys.stderr)
             sys.exit(1)
-        cmd_dismiss(args[1], args[2])
+        cmd_dismiss(workdir, rest2[0])
 
     elif subcmd == 'prune':
-        if len(args) < 2:
-            print("Usage: delegate-research prune <workdir>", file=sys.stderr)
-            sys.exit(1)
-        cmd_prune(args[1])
+        workdir, _ = _resolve_wd(rest)
+        cmd_prune(workdir)
 
     else:
         print(f"Unknown subcommand: {subcmd}", file=sys.stderr)
