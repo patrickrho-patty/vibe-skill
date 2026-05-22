@@ -463,7 +463,7 @@ VERIFY: grep for "datetime.date" in app.py and confirm it appears in fetch_data.
 | `prompt`       | —        | Self-contained task description                 |
 | `max-turns`    | `10`     | Turn limit — hard cap at 12, never more         |
 | `agent`        | *(none)* | See agent table below                           |
-| `timeout-secs` | `180`    | Wall-clock kill timer                           |
+| `timeout-secs` | `600`    | Wall-clock kill timer (10 minutes)              |
 
 The script automatically: creates a rollback checkpoint, injects the project brief
 (if `.delegate/project-brief.md` exists), runs pre-contracts, allocates a pseudo-TTY
@@ -559,6 +559,13 @@ Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x2.0)
 
 **Critical rule: the orchestrator NEVER writes code itself during delegation.**
 Its only actions are: review the diff, write correction prompts, send back to harness.
+
+**On timeout:** If a delegation times out, DO NOT implement the task yourself.
+Instead:
+1. Check if the delegate made partial progress (`git diff --stat`)
+2. If partial progress: send a correction to finish the remaining work
+3. If no progress: retry with a simpler decomposition or longer timeout
+4. NEVER say "I'll implement it directly" — that defeats the entire purpose
 
 After the delegate finishes, classify the result:
 

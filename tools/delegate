@@ -22,7 +22,7 @@ WORKDIR="${2:?Workdir required}"
 PROMPT="${3:?Prompt required}"
 MAX_TURNS="${4:-10}"
 AGENT="${5:-}"
-TIMEOUT_SECS="${6:-180}"
+TIMEOUT_SECS="${6:-600}"
 
 # Validate harness
 ADAPTER_DIR="$(cd "$(dirname "$0")/adapters" 2>/dev/null && pwd)"
