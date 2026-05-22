@@ -1,6 +1,6 @@
 ---
 name: vibe-reindex
-description: Update the project knowledge base. Usage: $vibe-reindex
+description: "Update the project knowledge base. Usage: $vibe-reindex"
 ---
 
 # $vibe-reindex

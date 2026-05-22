@@ -1,6 +1,6 @@
 ---
 name: vibe-research
-description: Show research findings or trigger a scan. Usage: $vibe-research [scan]
+description: "Show research findings or trigger a scan. Usage: $vibe-research [scan]"
 ---
 
 # $vibe-research

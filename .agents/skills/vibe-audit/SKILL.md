@@ -1,6 +1,6 @@
 ---
 name: vibe-audit
-description: Show audit findings or trigger a scan. Usage: $vibe-audit [scan]
+description: "Show audit findings or trigger a scan. Usage: $vibe-audit [scan]"
 ---
 
 # $vibe-audit

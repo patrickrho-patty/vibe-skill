@@ -1,6 +1,6 @@
 ---
 name: vibe-mode
-description: Pick which delegation mode (chain) to use. Usage: $vibe-mode <mode>
+description: "Pick which delegation mode (chain) to use. Usage: $vibe-mode <mode>"
 ---
 
 # $vibe-mode

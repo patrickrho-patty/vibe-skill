@@ -1,6 +1,6 @@
 ---
 name: vibe-scheduler
-description: Manage continuous background agents. Usage: $vibe-scheduler <start|stop|status>
+description: "Manage continuous background agents. Usage: $vibe-scheduler <start|stop|status>"
 ---
 
 # $vibe-scheduler

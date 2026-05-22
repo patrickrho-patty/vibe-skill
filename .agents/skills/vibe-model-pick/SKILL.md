@@ -1,6 +1,6 @@
 ---
 name: vibe-model-pick
-description: Override the delegate model for all subsequent delegations. Usage: $vibe-model-pick <alias>
+description: "Override the delegate model for all subsequent delegations. Usage: $vibe-model-pick <alias>"
 ---
 
 # $vibe-model-pick

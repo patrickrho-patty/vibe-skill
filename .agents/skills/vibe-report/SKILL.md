@@ -1,6 +1,6 @@
 ---
 name: vibe-report
-description: Show delegation usage report — token/cost/failure stats. Usage: $vibe-report [--since N] [--project NAME] [--fails]
+description: "Show delegation usage report — token/cost/failure stats. Usage: $vibe-report [--since N] [--project NAME] [--fails]"
 ---
 
 # $vibe-report
