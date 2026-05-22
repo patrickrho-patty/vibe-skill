@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""
+delegate-knowledge — manages a Karpathy-style knowledge base for a project.
+Usage:
+  delegate-knowledge init <workdir>
+  delegate-knowledge update <workdir>
+  delegate-knowledge show <workdir>
+  delegate-knowledge check <workdir>
+"""
+
+import os
+import sys
+import json
+import datetime
+import subprocess
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SKIP_DIRS = {'.git', 'node_modules', '.delegate', 'venv', '.venv', '__pycache__', 'dist', 'build', '.claude'}
+ENTRY_NAMES = ['main.py', 'app.py', 'index.js', 'index.ts', 'main.go', 'main.rs', 'server.py', 'server.js', 'manage.py']
+DEFAULT_UPDATE_MODEL = 'minimax/MiniMax-M2.7'
+KNOWLEDGE_FILE = '.delegate/knowledge.md'
+META_FILE = '.delegate/knowledge-meta.json'
+
+# ---------------------------------------------------------------------------
+# File discovery
+# ---------------------------------------------------------------------------
+
+def read_text(path: Path, max_bytes: int = 4096) -> str:
+    try:
+        data = path.read_bytes()[:max_bytes]
+        return data.decode('utf-8', errors='replace')
+    except Exception:
+        return ''
+
+
+def find_key_files(root: Path, max_files: int = 10, max_bytes: int = 4096) -> list:
+    """Find entry points, model files, route files, config files.
+    Returns list of (relative_path_str, content) tuples."""
+    results = []
+    seen = set()
+
+    def add(p: Path):
+        rel = str(p.relative_to(root))
+        if rel not in seen and len(results) < max_files:
+            content = read_text(p, max_bytes)
+            if content:
+                seen.add(rel)
+                results.append((rel, content))
+
+    # 1. Entry points by name
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in ENTRY_NAMES:
+            if name in filenames:
+                add(Path(dirpath) / name)
+        if len(results) >= max_files:
+            break
+
+    # 2. Model/route/config files
+    priority_patterns = [
+        lambda n: 'model' in n.lower() and n.endswith(('.py', '.js', '.ts', '.go', '.rs')),
+        lambda n: 'route' in n.lower() and n.endswith(('.py', '.js', '.ts', '.go', '.rs')),
+        lambda n: 'schema' in n.lower() and n.endswith(('.py', '.js', '.ts', '.go', '.rs')),
+        lambda n: n in ('config.py', 'config.js', 'config.ts', 'settings.py', 'settings.js',
+                        'constants.py', 'constants.js', 'constants.ts',
+                        '.env.example', 'pyproject.toml', 'package.json', 'Cargo.toml', 'go.mod'),
+    ]
+
+    if len(results) < max_files:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for fname in filenames:
+                for pat in priority_patterns:
+                    if pat(fname):
+                        add(Path(dirpath) / fname)
+                        break
+            if len(results) >= max_files:
+                break
+
+    return results
+
+# ---------------------------------------------------------------------------
+# Prompt builders
+# ---------------------------------------------------------------------------
+
+def build_files_block(files: list) -> str:
+    parts = []
+    for rel, content in files:
+        parts.append(f'=== {rel} ===\n{content}')
+    return '\n\n'.join(parts)
+
+
+def build_init_prompt(files: list) -> str:
+    files_block = build_files_block(files)
+    return f"""You are analyzing a codebase to produce a concise knowledge document.
+
+SOURCE FILES:
+{files_block}
+
+Produce a Markdown document with EXACTLY these 4 sections:
+## Architecture
+## Patterns
+## Data Flow
+## Gotchas
+
+CONSTRAINTS:
+- Maximum 800 tokens total
+- Be specific: name actual files, functions, variables
+- No generic advice — only facts about THIS codebase
+- Each section: 2-4 bullet points max
+- Output ONLY the markdown, nothing else"""
+
+
+def build_update_prompt(current_knowledge: str, files: list) -> str:
+    files_block = build_files_block(files)
+    return f"""You are updating a codebase knowledge document.
+
+CURRENT KNOWLEDGE (may be outdated):
+{current_knowledge}
+
+ACTUAL SOURCE FILES:
+{files_block}
+
+Compare the current knowledge against the actual code.
+Rewrite the ENTIRE document with corrected, current information.
+Keep the same 4-section structure. Maximum 800 tokens.
+Preserve facts that are still accurate. Fix facts that changed.
+Output ONLY the markdown, nothing else."""
+
+# ---------------------------------------------------------------------------
+# Codex invocation
+# ---------------------------------------------------------------------------
+
+def find_codex() -> str:
+    """Return path to codex binary or raise."""
+    # Check PATH
+    for directory in os.environ.get('PATH', '').split(':'):
+        candidate = Path(directory) / 'codex'
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise FileNotFoundError('codex binary not found in PATH')
+
+
+def extract_text_from_codex_json(stdout: str) -> str:
+    text_parts = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get('item', {})
+        if item.get('type') == 'message':
+            content = item.get('content', [])
+            if isinstance(content, list):
+                for c in content:
+                    if isinstance(c, dict) and c.get('text'):
+                        text_parts.append(c['text'])
+            elif isinstance(content, str):
+                text_parts.append(content)
+    return '\n'.join(text_parts)
+
+
+def run_codex(workdir: Path, prompt: str, model_override: str = None) -> str:
+    """Run codex exec --json and return extracted text."""
+    codex = find_codex()
+
+    cmd = [codex, 'exec', '--json', '-C', str(workdir), '-s', 'read-only']
+
+    if model_override:
+        if '/' in model_override:
+            # Extract profile from model string (e.g., "minimax/MiniMax-M2.7" → profile "minimax")
+            profile = model_override.split('/')[0]
+            cmd += ['-p', profile]
+        else:
+            cmd += ['-m', model_override]
+
+    cmd.append(prompt)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print('Error: codex exec timed out', file=sys.stderr)
+        sys.exit(1)
+    except FileNotFoundError:
+        print('Error: codex not found. Install it and ensure it is in PATH.', file=sys.stderr)
+        sys.exit(1)
+
+    if result.returncode != 0:
+        print(f'Error: codex exec failed (exit {result.returncode})', file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        sys.exit(1)
+
+    text = extract_text_from_codex_json(result.stdout)
+    if not text and result.stdout.strip():
+        # Fallback: return raw stdout if JSON parsing yielded nothing
+        text = result.stdout.strip()
+    return text
+
+# ---------------------------------------------------------------------------
+# Meta helpers
+# ---------------------------------------------------------------------------
+
+def read_meta(delegate_dir: Path) -> dict:
+    meta_path = delegate_dir / 'knowledge-meta.json'
+    if meta_path.exists():
+        try:
+            return json.loads(meta_path.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def write_meta(delegate_dir: Path, meta: dict):
+    delegate_dir.mkdir(parents=True, exist_ok=True)
+    (delegate_dir / 'knowledge-meta.json').write_text(json.dumps(meta, indent=2))
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+def cmd_init(workdir: Path):
+    files = find_key_files(workdir)
+    if not files:
+        print('Warning: no source files found in workdir', file=sys.stderr)
+
+    prompt = build_init_prompt(files)
+
+    try:
+        codex = find_codex()
+    except FileNotFoundError:
+        print('Error: codex not found. Install it and ensure it is in PATH.', file=sys.stderr)
+        sys.exit(1)
+
+    print(f'Running init with {len(files)} source files...', file=sys.stderr)
+    text = run_codex(workdir, prompt, model_override=None)
+
+    if not text:
+        print('Error: codex returned empty output', file=sys.stderr)
+        sys.exit(1)
+
+    delegate_dir = workdir / '.delegate'
+    delegate_dir.mkdir(parents=True, exist_ok=True)
+    knowledge_path = delegate_dir / 'knowledge.md'
+    knowledge_path.write_text(text)
+
+    meta = {
+        'last_update': datetime.datetime.utcnow().isoformat() + 'Z',
+        'delegations_since': 0,
+        'model': 'default',
+    }
+    write_meta(delegate_dir, meta)
+
+    print(f'Knowledge base written to {knowledge_path}', file=sys.stderr)
+
+
+def cmd_update(workdir: Path):
+    delegate_dir = workdir / '.delegate'
+    knowledge_path = delegate_dir / 'knowledge.md'
+
+    if not knowledge_path.exists():
+        print('Error: no knowledge.md found. Run `init` first.', file=sys.stderr)
+        sys.exit(1)
+
+    current_knowledge = knowledge_path.read_text()
+    files = find_key_files(workdir)
+
+    if not files:
+        print('Warning: no source files found in workdir', file=sys.stderr)
+
+    model_override = os.environ.get('DELEGATE_KNOWLEDGE_MODEL', DEFAULT_UPDATE_MODEL)
+    prompt = build_update_prompt(current_knowledge, files)
+
+    try:
+        find_codex()
+    except FileNotFoundError:
+        print('Error: codex not found. Install it and ensure it is in PATH.', file=sys.stderr)
+        sys.exit(1)
+
+    print(f'Running update with model {model_override} and {len(files)} source files...', file=sys.stderr)
+    text = run_codex(workdir, prompt, model_override=model_override)
+
+    if not text:
+        print('Error: codex returned empty output', file=sys.stderr)
+        sys.exit(1)
+
+    knowledge_path.write_text(text)
+
+    meta = read_meta(delegate_dir)
+    meta['last_update'] = datetime.datetime.utcnow().isoformat() + 'Z'
+    meta['delegations_since'] = 0
+    meta['model'] = model_override
+    write_meta(delegate_dir, meta)
+
+    print(f'Knowledge base updated at {knowledge_path}', file=sys.stderr)
+
+
+def cmd_show(workdir: Path):
+    knowledge_path = workdir / '.delegate' / 'knowledge.md'
+    if not knowledge_path.exists():
+        print('No knowledge base found')
+    else:
+        print(knowledge_path.read_text())
+
+
+def cmd_check(workdir: Path):
+    knowledge_path = workdir / '.delegate' / 'knowledge.md'
+    if knowledge_path.exists():
+        sys.exit(0)
+    else:
+        sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    if len(sys.argv) < 3:
+        print(__doc__.strip())
+        sys.exit(1)
+
+    subcommand = sys.argv[1]
+    workdir = Path(sys.argv[2]).resolve()
+
+    if not workdir.exists():
+        print(f'Error: workdir does not exist: {workdir}', file=sys.stderr)
+        sys.exit(1)
+
+    if subcommand == 'init':
+        cmd_init(workdir)
+    elif subcommand == 'update':
+        cmd_update(workdir)
+    elif subcommand == 'show':
+        cmd_show(workdir)
+    elif subcommand == 'check':
+        cmd_check(workdir)
+    else:
+        print(f'Unknown subcommand: {subcommand}', file=sys.stderr)
+        print(__doc__.strip())
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

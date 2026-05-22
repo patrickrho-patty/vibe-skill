@@ -1,0 +1,20 @@
+name: tournament
+description: 4 models race on implementation, GLM judges the winner
+
+steps:
+  - role: implementor
+    turns: 0
+    prompt_template: "Implement: {task}\n\nWrite clean, working code. Follow existing conventions."
+    parallel:
+      workers:
+        - harness: codex
+          model: minimax/MiniMax-M2.7
+        - harness: codex
+          model: minimax/MiniMax-M2.7
+        - harness: codex
+          model: glm/glm-5.1
+        - harness: codex
+          model: glm/glm-5.1
+      judge:
+        harness: codex
+        model: glm/glm-5.1

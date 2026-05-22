@@ -11,3 +11,12 @@
 .delegate/auto.flag
 .delegate/model.flag
 .delegate/mode.flag
+.delegate/knowledge.md
+.delegate/knowledge-meta.json
+.delegate/audit-findings.jsonl
+.delegate/audit.pid
+.delegate/research.jsonl
+.delegate/research.pid
+.delegate/scheduler.pid
+.delegate/scheduler-state.json
+.delegate/scheduler.log

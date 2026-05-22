@@ -30,6 +30,10 @@ import os
 import re
 import subprocess
 import time
+import atexit
+import signal
+import shutil
+import json
 
 
 # ── YAML subset parser ─────────────────────────────────────────────────────────
@@ -71,6 +75,9 @@ def parse_chain(path):
         m = re.match(r'^\s+-\s+role:\s*(.+)$', line)
         if m:
             if current_step is not None:
+                # Clean up internal parser flags before appending
+                for _flag in ('_collecting_prompt', '_in_parallel', '_parallel_section'):
+                    current_step.pop(_flag, None)
                 chain['steps'].append(current_step)
             current_step = {
                 'role': m.group(1).strip().strip('"\''),
@@ -83,19 +90,51 @@ def parse_chain(path):
         if current_step is None:
             continue
 
-        # Step fields (indented with spaces)
+        # ── parallel: block handler (must come before generic step-field matchers) ──
+
+        # Inside parallel: block — consume lines before they hit generic field parsers
+        if current_step.get('_in_parallel'):
+            if re.match(r'^\s+workers:\s*$', line):
+                current_step['_parallel_section'] = 'workers'
+                continue
+            if re.match(r'^\s+judge:\s*$', line):
+                current_step['_parallel_section'] = 'judge'
+                continue
+
+            if current_step['_parallel_section'] == 'workers':
+                m = re.match(r'^\s+-\s+harness:\s*(.+)$', line)
+                if m:
+                    current_step['parallel']['workers'].append({'harness': m.group(1).strip()})
+                    continue
+                m = re.match(r'^\s+model:\s*(.+)$', line)
+                if m and current_step['parallel']['workers']:
+                    current_step['parallel']['workers'][-1]['model'] = m.group(1).strip()
+                    continue
+
+            if current_step['_parallel_section'] == 'judge':
+                m = re.match(r'^\s+harness:\s*(.+)$', line)
+                if m:
+                    current_step['parallel']['judge']['harness'] = m.group(1).strip()
+                    continue
+                m = re.match(r'^\s+model:\s*(.+)$', line)
+                if m:
+                    current_step['parallel']['judge']['model'] = m.group(1).strip()
+                    continue
+
+        # ── Generic step fields (indented with spaces) ──
+
         m = re.match(r'^\s+agent:\s*(.+)$', line)
         if m:
             current_step['agent'] = m.group(1).strip().strip('"\'')
             continue
 
         m = re.match(r'^\s+harness:\s*(.+)$', line)
-        if m:
+        if m and not current_step.get('_in_parallel'):
             current_step['harness'] = m.group(1).strip().strip('"\'')
             continue
 
         m = re.match(r'^\s+model:\s*(.+)$', line)
-        if m:
+        if m and not current_step.get('_in_parallel'):
             current_step['model'] = m.group(1).strip().strip('"\'')
             continue
 
@@ -113,6 +152,14 @@ def parse_chain(path):
                 current_step['prompt_template'] = ''
             else:
                 current_step['prompt_template'] = value
+            continue
+
+        # parallel: block detection (enter parallel mode)
+        m = re.match(r'^\s+parallel:\s*$', line)
+        if m:
+            current_step['parallel'] = {'workers': [], 'judge': {}}
+            current_step['_in_parallel'] = True
+            current_step['_parallel_section'] = None
             continue
 
         # Collect multi-line prompt_template continuation lines
@@ -138,6 +185,10 @@ def parse_chain(path):
     if current_step is not None:
         if '_collecting_prompt' in current_step:
             del current_step['_collecting_prompt']
+        if '_in_parallel' in current_step:
+            del current_step['_in_parallel']
+        if '_parallel_section' in current_step:
+            del current_step['_parallel_section']
         chain['steps'].append(current_step)
 
     return chain
@@ -208,6 +259,276 @@ def run_step(step, workdir, task, harness, step_index, total_steps, git_context=
     return result.returncode
 
 
+# ── Parallel step runner ───────────────────────────────────────────────────────
+
+def run_parallel_step(step, workdir, task, harness, step_index, total_steps, git_context=''):
+    """Run N workers in parallel, judge picks the winner."""
+
+    parallel = step['parallel']
+    workers = parallel['workers']
+    judge_config = parallel['judge']
+    role = step['role']
+    template = step.get('prompt_template', '{task}')
+    prompt = template.replace('{task}', task)
+    if git_context:
+        prompt += f'\n\nContext from previous step:\n{git_context}'
+
+    n = len(workers)
+    print(f'\n{"=" * 60}')
+    print(f'PARALLEL STEP {step_index + 1}/{total_steps}: {role} ({n} workers)')
+    for i, w in enumerate(workers):
+        print(f'  Worker {i+1}: {w.get("model", "default")} ({w.get("harness", "codex")})')
+    print(f'  Judge: {judge_config.get("model", "default")}')
+    print(f'{"=" * 60}')
+
+    # Phase 1: Create worktrees
+    pid = os.getpid()
+    ts = int(time.time() * 1000)
+    worktree_base = f'/tmp/delegate-race-{pid}-{ts}'
+    os.makedirs(worktree_base, exist_ok=True)
+
+    worktree_info = []  # list of (worktree_path, branch_name, worker_config)
+
+    def cleanup_worktrees():
+        for wt_path, branch, _ in worktree_info:
+            subprocess.run(['git', 'worktree', 'remove', '--force', wt_path],
+                           cwd=workdir, capture_output=True)
+            subprocess.run(['git', 'branch', '-D', branch],
+                           cwd=workdir, capture_output=True)
+        if os.path.exists(worktree_base):
+            shutil.rmtree(worktree_base, ignore_errors=True)
+
+    atexit.register(cleanup_worktrees)
+
+    for i, worker in enumerate(workers):
+        branch = f'delegate-race-{role}-{i}-{pid}-{ts}'
+        wt_path = os.path.join(worktree_base, f'worker-{i}')
+        result = subprocess.run(
+            ['git', 'worktree', 'add', '-b', branch, wt_path, 'HEAD'],
+            cwd=workdir, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f'  ERROR: Failed to create worktree for worker {i+1}: {result.stderr.strip()}')
+            cleanup_worktrees()
+            atexit.unregister(cleanup_worktrees)
+            return 1
+        worktree_info.append((wt_path, branch, worker))
+
+    # Phase 2: Dispatch all workers in parallel
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    delegate_path = os.path.join(script_dir, 'delegate')
+
+    processes = []
+    for i, (wt_path, branch, worker) in enumerate(worktree_info):
+        w_harness = worker.get('harness', 'codex')
+        w_model = worker.get('model', '')
+
+        env = os.environ.copy()
+        if w_model:
+            env['DELEGATE_ACTIVE_MODEL'] = w_model
+            env['VIBE_ACTIVE_MODEL'] = w_model
+            env['PI_MODEL'] = w_model
+            env['CODEX_MODEL'] = w_model
+
+        turns = step.get('turns', 0)
+        cmd = [delegate_path, w_harness, wt_path, prompt]
+        if turns and turns > 0:
+            cmd.append(str(turns))
+
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        processes.append((i, proc))
+
+    # Phase 3: Wait for all workers
+    worker_results = []
+    for i, proc in processes:
+        try:
+            stdout, stderr = proc.communicate(timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        wt_path = worktree_info[i][0]
+
+        # Get diff from worktree
+        diff_result = subprocess.run(
+            ['git', 'diff', 'HEAD'], capture_output=True, text=True, cwd=wt_path
+        )
+        stat_result = subprocess.run(
+            ['git', 'diff', '--stat', 'HEAD'], capture_output=True, text=True, cwd=wt_path
+        )
+
+        # Run syntax check
+        ast_check = os.path.join(script_dir, 'delegate-ast-check')
+        if os.path.isfile(ast_check):
+            syntax_result = subprocess.run(
+                ['python3', ast_check, wt_path],
+                capture_output=True, text=True
+            )
+            syntax_ok = syntax_result.returncode == 0
+        else:
+            syntax_ok = True  # no checker available — optimistic
+
+        worker_results.append({
+            'index': i,
+            'model': worktree_info[i][2].get('model', 'unknown'),
+            'exit_code': proc.returncode,
+            'diff': diff_result.stdout[:5000],  # cap diff size for judge
+            'stat': stat_result.stdout,
+            'syntax_ok': syntax_ok,
+            'stdout': stdout.decode('utf-8', errors='replace')[-500:],  # last 500 chars
+        })
+
+    # Print results table
+    print(f'\n  {"Worker":<8} {"Model":<25} {"Exit":<6} {"Syntax":<8} {"Files"}')
+    print(f'  {"------":<8} {"-----":<25} {"----":<6} {"------":<8} {"-----"}')
+    for wr in worker_results:
+        syntax_str = "OK" if wr['syntax_ok'] else "FAIL"
+        stat_lines = [l for l in wr['stat'].splitlines() if '|' in l]
+        print(f'  {wr["index"]+1:<8} {wr["model"]:<25} {wr["exit_code"]:<6} {syntax_str:<8} {len(stat_lines)}')
+
+    # Phase 4: Filter to successful workers
+    successful = [wr for wr in worker_results if wr['exit_code'] == 0]
+
+    if not successful:
+        print(f'\n  ALL WORKERS FAILED — skipping judge')
+        cleanup_worktrees()
+        atexit.unregister(cleanup_worktrees)
+        return 1
+
+    if len(successful) == 1:
+        print(f'\n  Only worker {successful[0]["index"]+1} succeeded — skipping judge')
+        winner = successful[0]
+    else:
+        # Phase 5: Build judge prompt and call judge
+        judge_prompt_parts = [
+            'You are a code quality judge. Multiple AI workers attempted the same task.',
+            'Pick the SINGLE BEST solution or REJECT ALL if none are acceptable.',
+            '',
+            '## Original Task',
+            prompt[:500],
+            '',
+        ]
+
+        for wr in successful:
+            judge_prompt_parts.append(f'## Worker {wr["index"]+1} ({wr["model"]})')
+            judge_prompt_parts.append(f'Syntax: {"OK" if wr["syntax_ok"] else "ERRORS"}')
+            judge_prompt_parts.append('```diff')
+            judge_prompt_parts.append(wr['diff'][:3000])
+            judge_prompt_parts.append('```')
+            judge_prompt_parts.append('')
+
+        judge_prompt_parts.append('Respond with EXACTLY one of:')
+        judge_prompt_parts.append('WINNER: <number> — followed by your reasoning')
+        judge_prompt_parts.append('REJECT_ALL — followed by why none are acceptable')
+
+        judge_prompt = '\n'.join(judge_prompt_parts)
+
+        j_harness = judge_config.get('harness', 'codex')
+        j_model = judge_config.get('model', '')
+
+        judge_env = os.environ.copy()
+        if j_model:
+            judge_env['DELEGATE_ACTIVE_MODEL'] = j_model
+            judge_env['CODEX_MODEL'] = j_model
+
+        # Run judge via codex exec directly (read-only, no file changes)
+        judge_cmd = ['codex', 'exec', '--json', '-C', workdir]
+        if j_model and '/' in j_model:
+            judge_cmd += ['-p', j_model.split('/')[0]]
+        elif j_model:
+            judge_cmd += ['-m', j_model]
+        judge_cmd.append(judge_prompt)
+
+        print(f'\n  Running judge ({judge_config.get("model", "default")})...')
+        try:
+            judge_proc = subprocess.run(
+                judge_cmd, capture_output=True, text=True, timeout=120, env=judge_env
+            )
+        except subprocess.TimeoutExpired:
+            print('  Judge timed out — auto-picking winner by score')
+            judge_proc = None
+
+        # Extract judge response
+        judge_text = ''
+        if judge_proc is not None:
+            for line in judge_proc.stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                    item = event.get('item', {})
+                    if item.get('type') in ('message', 'text'):
+                        content = item.get('content', '')
+                        if isinstance(content, list):
+                            for c in content:
+                                if isinstance(c, dict) and c.get('text'):
+                                    judge_text += c['text']
+                        elif isinstance(content, str):
+                            judge_text += content
+                except json.JSONDecodeError:
+                    continue
+
+        # Parse winner
+        winner_match = re.search(r'WINNER:\s*(\d+)', judge_text)
+        reject_match = re.search(r'REJECT_ALL', judge_text)
+
+        if reject_match and not winner_match:
+            print(f'\n  Judge: REJECT_ALL')
+            print(f'  Reason: {judge_text[:200]}')
+            cleanup_worktrees()
+            atexit.unregister(cleanup_worktrees)
+            return 1
+        elif winner_match:
+            winner_num = int(winner_match.group(1)) - 1  # 0-indexed
+            winner_candidates = [wr for wr in successful if wr['index'] == winner_num]
+            if winner_candidates:
+                winner = winner_candidates[0]
+                print(f'\n  Judge: WINNER {winner_num + 1} ({winner["model"]})')
+            else:
+                # Judge picked a failed worker, fall back to first successful
+                winner = successful[0]
+                print(f'\n  Judge picked invalid worker, falling back to worker {winner["index"]+1}')
+        else:
+            # Can't parse judge output — auto-score: prefer syntax_ok, then smallest diff
+            winner = sorted(successful, key=lambda w: (not w['syntax_ok'], len(w['diff'])))[0]
+            print(f'\n  Judge output unparseable, auto-picked worker {winner["index"]+1}')
+
+    # Phase 6: Apply winner
+    winner_wt = worktree_info[winner['index']][0]
+    winner_branch = worktree_info[winner['index']][1]
+
+    # Commit in winner worktree
+    subprocess.run(['git', 'add', '-A'], cwd=winner_wt, capture_output=True)
+    subprocess.run(
+        ['git', 'commit', '-m',
+         f'delegate-race: {role} (worker {winner["index"]+1}, {winner["model"]})'],
+        cwd=winner_wt, capture_output=True
+    )
+
+    # Merge into main workdir
+    merge_result = subprocess.run(
+        ['git', 'merge', winner_branch, '--no-edit'],
+        cwd=workdir, capture_output=True, text=True
+    )
+
+    if merge_result.returncode != 0:
+        # Fallback: checkout theirs entirely
+        subprocess.run(['git', 'merge', '--abort'], cwd=workdir, capture_output=True)
+        subprocess.run(['git', 'checkout', winner_branch, '--', '.'], cwd=workdir, capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=workdir, capture_output=True)
+        subprocess.run(
+            ['git', 'commit', '-m',
+             f'delegate-race: {role} (worker {winner["index"]+1}, forced)'],
+            cwd=workdir, capture_output=True
+        )
+
+    print(f'\n  Winner merged: worker {winner["index"]+1} ({winner["model"]})')
+    print(f'  {winner["stat"]}')
+
+    # Phase 7: Cleanup
+    cleanup_worktrees()
+    atexit.unregister(cleanup_worktrees)
+
+    return 0
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -274,15 +595,26 @@ def main():
     for i, step in enumerate(chain['steps']):
         step_start = time.time()
 
-        exit_code = run_step(
-            step=step,
-            workdir=workdir,
-            task=task,
-            harness=harness,
-            step_index=i,
-            total_steps=total_steps,
-            git_context=git_context,
-        )
+        if 'parallel' in step:
+            exit_code = run_parallel_step(
+                step=step,
+                workdir=workdir,
+                task=task,
+                harness=harness,
+                step_index=i,
+                total_steps=total_steps,
+                git_context=git_context,
+            )
+        else:
+            exit_code = run_step(
+                step=step,
+                workdir=workdir,
+                task=task,
+                harness=harness,
+                step_index=i,
+                total_steps=total_steps,
+                git_context=git_context,
+            )
 
         step_duration = round(time.time() - step_start, 1)
         results.append((step['role'], exit_code, step_duration))

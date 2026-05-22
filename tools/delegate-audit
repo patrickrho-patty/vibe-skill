@@ -1,0 +1,591 @@
+#!/usr/bin/env python3
+"""
+delegate-audit — Read-only background audit agent for codebases.
+
+Dispatches a cheap model per-file to find potential bugs, code smells, and
+concerns. Strictly read-only — never modifies code. Findings are appended to
+.delegate/audit-findings.jsonl. The SOTA orchestrator later reviews and acts
+on them.
+
+Usage:
+  delegate-audit scan <workdir> [--file <path>] [--model <model>]
+  delegate-audit list <workdir> [--severity <level>] [--file <path>]
+  delegate-audit resolve <workdir> <finding-id>
+  delegate-audit dismiss <workdir> <finding-id>
+  delegate-audit prune <workdir>
+  delegate-audit stats <workdir>
+"""
+
+import sys
+import os
+import json
+import re
+import fcntl
+import hashlib
+import subprocess
+import time
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
+FINDINGS_FILE = '.delegate/audit-findings.jsonl'
+
+SKIP = {'.git', 'node_modules', '.delegate', 'venv', '.venv', '__pycache__', 'dist', 'build', '.claude'}
+EXTENSIONS = {'.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.rb', '.sh', '.bash'}
+
+DEFAULT_MODEL = 'minimax/MiniMax-M2.7'
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+def findings_path(workdir: str) -> Path:
+    return Path(workdir) / FINDINGS_FILE
+
+
+def load_findings(workdir: str) -> list:
+    fp = findings_path(workdir)
+    if not fp.exists():
+        return []
+    findings = []
+    with open(fp) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    findings.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    return findings
+
+
+def save_finding(workdir: str, finding: dict) -> None:
+    fp = findings_path(workdir)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    with open(fp, 'a') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(finding) + '\n')
+        f.flush()
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def rewrite_findings(workdir: str, findings: list) -> None:
+    """Rewrite the entire findings file with updated data."""
+    fp = findings_path(workdir)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    with open(fp, 'w') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        for entry in findings:
+            f.write(json.dumps(entry) + '\n')
+        f.flush()
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def make_id(filepath: str, line: int, concern: str) -> str:
+    raw = f"{filepath}:{line}:{concern[:50]}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:8]
+
+
+def now_utc() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def word_set(text: str) -> set:
+    return set(re.findall(r'\w+', text.lower()))
+
+
+def is_fuzzy_duplicate(new_finding: dict, existing: list) -> bool:
+    """Return True if finding is a near-duplicate of an existing one."""
+    new_file = new_finding['file']
+    new_line = new_finding['line']
+    new_words = word_set(new_finding['concern'])
+
+    for e in existing:
+        if e.get('file') != new_file:
+            continue
+        if abs(e.get('line', 0) - new_line) > 3:
+            continue
+        e_words = word_set(e.get('concern', ''))
+        if not new_words or not e_words:
+            continue
+        overlap = len(new_words & e_words) / max(len(new_words), len(e_words))
+        if overlap > 0.8:
+            return True
+    return False
+
+
+# ── File discovery ───────────────────────────────────────────────────────────
+
+def discover_files(workdir: str) -> list:
+    """Walk workdir, return source files sorted by mtime descending, max 50."""
+    workdir_path = Path(workdir)
+    files = []
+
+    for root, dirs, filenames in os.walk(workdir_path):
+        # Prune skipped dirs in-place
+        dirs[:] = [d for d in dirs if d not in SKIP]
+
+        root_path = Path(root)
+        rel_root = root_path.relative_to(workdir_path)
+        parts = set(rel_root.parts)
+
+        for fname in filenames:
+            fpath = root_path / fname
+            rel = fpath.relative_to(workdir_path)
+            rel_str = str(rel)
+
+            # Include files in tools/ regardless of extension
+            in_tools = parts and list(rel.parts)[0] == 'tools'
+            has_ext = fpath.suffix in EXTENSIONS
+
+            if not (has_ext or in_tools):
+                continue
+
+            try:
+                mtime = fpath.stat().st_mtime
+            except OSError:
+                continue
+            files.append((mtime, rel_str))
+
+    files.sort(reverse=True)
+    return [f for _, f in files[:50]]
+
+
+# ── Codex invocation ─────────────────────────────────────────────────────────
+
+def run_codex_audit(workdir: str, prompt: str, model: str = DEFAULT_MODEL) -> str:
+    cmd = ['codex', 'exec', '--json', '-C', workdir, '-s', 'read-only']
+    if '/' in model:
+        cmd += ['-p', model.split('/')[0]]
+    else:
+        cmd += ['-m', model]
+    cmd.append(prompt)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return result.stdout
+    except FileNotFoundError:
+        print('ERROR: codex not found in PATH. Install codex CLI first.', file=sys.stderr)
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print('WARNING: codex timed out for this file', file=sys.stderr)
+        return ''
+
+
+def extract_json_array(text: str) -> list:
+    """Parse JSON array from assistant text, with regex fallback."""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to extract JSON array via regex
+    match = re.search(r'\[.*?\]', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    return []
+
+
+def parse_codex_output(output: str) -> list:
+    """Parse JSON event stream from codex exec --json to get assistant text."""
+    if not output.strip():
+        return []
+
+    assistant_text_parts = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # Handle different event shapes from codex --json output
+        # Common shapes: {"type": "message", "role": "assistant", "content": "..."}
+        # or {"type": "content_block_delta", "delta": {"text": "..."}}
+        # or {"role": "assistant", "content": "..."}
+        event_type = event.get('type', '')
+
+        if event_type in ('message', 'assistant_message') and event.get('role') == 'assistant':
+            content = event.get('content', '')
+            if isinstance(content, str):
+                assistant_text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        assistant_text_parts.append(block.get('text', ''))
+
+        elif event_type == 'content_block_delta':
+            delta = event.get('delta', {})
+            if delta.get('type') == 'text_delta':
+                assistant_text_parts.append(delta.get('text', ''))
+
+        elif event.get('role') == 'assistant':
+            content = event.get('content', '')
+            if isinstance(content, str):
+                assistant_text_parts.append(content)
+
+        # Some codex versions emit a top-level "output" field
+        elif 'output' in event and isinstance(event['output'], str):
+            assistant_text_parts.append(event['output'])
+
+    full_text = ''.join(assistant_text_parts).strip()
+    if full_text:
+        return extract_json_array(full_text)
+
+    # Fallback: try to find any JSON array in the raw output
+    return extract_json_array(output)
+
+
+def build_audit_prompt(filepath: str, file_content: str, existing_findings: list) -> str:
+    known_lines = '\n'.join(
+        f"  line {f['line']}: {f['concern']}"
+        for f in existing_findings
+        if f.get('status') == 'open'
+    ) or '(none)'
+
+    return f"""You are a code auditor. Find potential bugs, code smells, and concerns.
+You are READ-ONLY — you never fix anything, only report.
+
+FILE: {filepath}
+CONTENT:
+{file_content}
+
+KNOWN ISSUES (already reported — do NOT re-report):
+{known_lines}
+
+Return a JSON array of findings:
+[{{
+  "line": <number>,
+  "concern": "<1-2 sentence description>",
+  "severity": "low|medium|high",
+  "category": "error-handling|security|performance|logic|style|duplication"
+}}]
+
+RULES:
+- Only genuine concerns, not style preferences
+- Reference exact line numbers and variable names
+- Skip issues already in KNOWN ISSUES
+- If the file is clean, return: []
+- Maximum 5 findings per file
+- Output ONLY the JSON array, nothing else"""
+
+
+# ── Subcommands ──────────────────────────────────────────────────────────────
+
+def cmd_scan(args: list) -> int:
+    if not args:
+        print('Usage: delegate-audit scan <workdir> [--file <path>] [--model <model>]', file=sys.stderr)
+        return 1
+
+    workdir = args[0]
+    if not Path(workdir).is_dir():
+        print(f'ERROR: workdir {workdir!r} does not exist', file=sys.stderr)
+        return 1
+
+    # Parse flags
+    single_file = None
+    model = os.environ.get('DELEGATE_AUDIT_MODEL', DEFAULT_MODEL)
+
+    i = 1
+    while i < len(args):
+        if args[i] == '--file' and i + 1 < len(args):
+            single_file = args[i + 1]
+            i += 2
+        elif args[i] == '--model' and i + 1 < len(args):
+            model = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    # Determine files to scan
+    if single_file:
+        files = [single_file]
+    else:
+        files = discover_files(workdir)
+
+    if not files:
+        print('No source files found to audit.')
+        return 0
+
+    print(f'Scanning {len(files)} file(s) with model {model}...')
+
+    existing_findings = load_findings(workdir)
+    new_total = 0
+
+    for idx, filepath in enumerate(files):
+        full_path = Path(workdir) / filepath
+        if not full_path.is_file():
+            print(f'  [{idx+1}/{len(files)}] SKIP (not found): {filepath}')
+            continue
+
+        # Read file content, cap at 8KB
+        try:
+            content = full_path.read_text(errors='replace')
+        except OSError as e:
+            print(f'  [{idx+1}/{len(files)}] SKIP (read error): {filepath}: {e}')
+            continue
+        content = content[:8192]
+
+        # Get existing findings for this file for dedup context
+        file_findings = [f for f in existing_findings if f.get('file') == filepath]
+
+        print(f'  [{idx+1}/{len(files)}] Auditing: {filepath}')
+
+        prompt = build_audit_prompt(filepath, content, file_findings)
+        output = run_codex_audit(workdir, prompt, model)
+
+        raw_findings = parse_codex_output(output)
+        if not isinstance(raw_findings, list):
+            raw_findings = []
+
+        added = 0
+        for raw in raw_findings:
+            if not isinstance(raw, dict):
+                continue
+
+            line = int(raw.get('line', 0))
+            concern = str(raw.get('concern', '')).strip()
+            severity = str(raw.get('severity', 'low')).lower()
+            category = str(raw.get('category', 'logic')).lower()
+
+            if not concern:
+                continue
+
+            finding_id = make_id(filepath, line, concern)
+
+            # Exact duplicate check
+            if any(f.get('id') == finding_id for f in existing_findings):
+                continue
+
+            new_finding = {
+                'id': finding_id,
+                'file': filepath,
+                'line': line,
+                'concern': concern,
+                'severity': severity,
+                'category': category,
+                'timestamp': now_utc(),
+                'status': 'open',
+                'resolved_at': None,
+                'dismissed_at': None,
+            }
+
+            # Fuzzy duplicate check
+            if is_fuzzy_duplicate(new_finding, existing_findings):
+                continue
+
+            save_finding(workdir, new_finding)
+            existing_findings.append(new_finding)
+            added += 1
+
+        print(f'    → {added} new finding(s)')
+        new_total += added
+
+        # Rate limit between files
+        if idx < len(files) - 1:
+            time.sleep(2)
+
+    print(f'\nScan complete. {new_total} new finding(s) appended to {findings_path(workdir)}')
+    return 0
+
+
+def cmd_list(args: list) -> int:
+    if not args:
+        print('Usage: delegate-audit list <workdir> [--severity <level>] [--file <path>]', file=sys.stderr)
+        return 1
+
+    workdir = args[0]
+    severity_filter = None
+    file_filter = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == '--severity' and i + 1 < len(args):
+            severity_filter = args[i + 1].lower()
+            i += 2
+        elif args[i] == '--file' and i + 1 < len(args):
+            file_filter = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    findings = load_findings(workdir)
+    open_findings = [f for f in findings if f.get('status') == 'open']
+
+    if severity_filter:
+        open_findings = [f for f in open_findings if f.get('severity') == severity_filter]
+    if file_filter:
+        open_findings = [f for f in open_findings if f.get('file') == file_filter]
+
+    if not open_findings:
+        print('No findings.')
+        return 0
+
+    for f in open_findings:
+        sev = f.get('severity', 'unknown').upper()
+        fpath = f.get('file', '')
+        line = f.get('line', 0)
+        fid = f.get('id', '')
+        concern = f.get('concern', '')
+        print(f'[{sev}] {fpath}:{line} ({fid})')
+        print(f'  {concern}')
+
+    return 0
+
+
+def _update_finding_status(workdir: str, finding_id: str, status: str, ts_field: str) -> int:
+    findings = load_findings(workdir)
+    updated = False
+    for f in findings:
+        if f.get('id') == finding_id:
+            f['status'] = status
+            f[ts_field] = now_utc()
+            updated = True
+            break
+
+    if not updated:
+        print(f'ERROR: finding {finding_id!r} not found', file=sys.stderr)
+        return 1
+
+    rewrite_findings(workdir, findings)
+    print(f'Finding {finding_id} marked as {status}.')
+    return 0
+
+
+def cmd_resolve(args: list) -> int:
+    if len(args) < 2:
+        print('Usage: delegate-audit resolve <workdir> <finding-id>', file=sys.stderr)
+        return 1
+    return _update_finding_status(args[0], args[1], 'resolved', 'resolved_at')
+
+
+def cmd_dismiss(args: list) -> int:
+    if len(args) < 2:
+        print('Usage: delegate-audit dismiss <workdir> <finding-id>', file=sys.stderr)
+        return 1
+    return _update_finding_status(args[0], args[1], 'dismissed', 'dismissed_at')
+
+
+def cmd_prune(args: list) -> int:
+    if not args:
+        print('Usage: delegate-audit prune <workdir>', file=sys.stderr)
+        return 1
+
+    workdir = args[0]
+    findings = load_findings(workdir)
+    now = datetime.now(timezone.utc)
+    threshold_open = now - timedelta(days=7)
+    threshold_closed = now - timedelta(days=30)
+
+    kept = []
+    removed = 0
+
+    for f in findings:
+        status = f.get('status', 'open')
+        ts_str = f.get('timestamp', '')
+        try:
+            ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        except (ValueError, AttributeError):
+            kept.append(f)
+            continue
+
+        if status == 'open' and ts < threshold_open:
+            removed += 1
+            continue
+        if status in ('resolved', 'dismissed') and ts < threshold_closed:
+            removed += 1
+            continue
+
+        kept.append(f)
+
+    rewrite_findings(workdir, kept)
+    print(f'Pruned {removed} finding(s). {len(kept)} remaining.')
+    return 0
+
+
+def cmd_stats(args: list) -> int:
+    if not args:
+        print('Usage: delegate-audit stats <workdir>', file=sys.stderr)
+        return 1
+
+    workdir = args[0]
+    findings = load_findings(workdir)
+    open_findings = [f for f in findings if f.get('status') == 'open']
+
+    total = len(open_findings)
+    print(f'Open findings: {total}')
+
+    if not open_findings:
+        print('By severity:  (none)')
+        print('By category:  (none)')
+        print('By file (top 5): (none)')
+        return 0
+
+    # By severity
+    severity_counts: dict = {}
+    for f in open_findings:
+        sev = f.get('severity', 'unknown')
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+    print('By severity:')
+    for sev in ('high', 'medium', 'low'):
+        count = severity_counts.get(sev, 0)
+        print(f'  {sev}: {count}')
+    for sev, count in severity_counts.items():
+        if sev not in ('high', 'medium', 'low'):
+            print(f'  {sev}: {count}')
+
+    # By category
+    category_counts: dict = {}
+    for f in open_findings:
+        cat = f.get('category', 'unknown')
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+    print('By category:')
+    for cat, count in sorted(category_counts.items(), key=lambda x: -x[1]):
+        print(f'  {cat}: {count}')
+
+    # By file (top 5)
+    file_counts: dict = {}
+    for f in open_findings:
+        fp = f.get('file', 'unknown')
+        file_counts[fp] = file_counts.get(fp, 0) + 1
+    print('By file (top 5):')
+    for fp, count in sorted(file_counts.items(), key=lambda x: -x[1])[:5]:
+        print(f'  {fp}: {count}')
+
+    return 0
+
+
+# ── Entry point ──────────────────────────────────────────────────────────────
+
+COMMANDS = {
+    'scan': cmd_scan,
+    'list': cmd_list,
+    'resolve': cmd_resolve,
+    'dismiss': cmd_dismiss,
+    'prune': cmd_prune,
+    'stats': cmd_stats,
+}
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 1
+
+    subcmd = sys.argv[1]
+    rest = sys.argv[2:]
+
+    if subcmd not in COMMANDS:
+        print(f'ERROR: unknown subcommand {subcmd!r}', file=sys.stderr)
+        print(f'Available: {", ".join(COMMANDS)}', file=sys.stderr)
+        return 1
+
+    return COMMANDS[subcmd](rest)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

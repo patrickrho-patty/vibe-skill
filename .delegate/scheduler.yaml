@@ -1,0 +1,14 @@
+# Scheduler configuration — how often each agent runs (in minutes)
+# Set interval to 0 to disable a job
+
+audit:
+  interval: 30
+  model: minimax/MiniMax-M2.7
+
+research:
+  interval: 120
+  model: glm/glm-5.1
+
+knowledge_update:
+  interval: 60
+  model: minimax/MiniMax-M2.7

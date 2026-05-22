@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""
+delegate-scheduler — per-project scheduler daemon for continuous agents.
+
+Usage:
+  delegate-scheduler start <workdir>
+  delegate-scheduler stop <workdir>
+  delegate-scheduler status <workdir>
+  delegate-scheduler config <workdir>
+"""
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+JOB_COMMANDS = {
+    'audit': ['python3', str(SCRIPT_DIR / 'delegate-audit'), 'scan', '{workdir}'],
+    'research': ['python3', str(SCRIPT_DIR / 'delegate-research'), 'scan', '{workdir}'],
+    'knowledge_update': ['python3', str(SCRIPT_DIR / 'delegate-knowledge'), 'update', '{workdir}'],
+}
+
+DAEMON_SLEEP = 60  # seconds between scheduler ticks
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+def log(workdir: Path, message: str) -> None:
+    log_file = workdir / '.delegate' / 'scheduler.log'
+    lines = []
+    if log_file.exists():
+        lines = log_file.read_text().splitlines()
+    lines = lines[-99:]  # keep last 99
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    lines.append(f"{ts} {message}")
+    log_file.write_text('\n'.join(lines) + '\n')
+
+
+# ---------------------------------------------------------------------------
+# YAML parsing (stdlib fallback)
+# ---------------------------------------------------------------------------
+
+def parse_yaml(text: str) -> dict:
+    """Minimal YAML parser for the scheduler config (no external deps)."""
+    if yaml is not None:
+        return yaml.safe_load(text) or {}
+
+    result = {}
+    current_key = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        # Skip comments and blank lines
+        if not line or line.lstrip().startswith('#'):
+            continue
+        # Top-level key (no leading spaces)
+        if not line[0].isspace():
+            key = line.rstrip(':').strip()
+            result[key] = {}
+            current_key = key
+        else:
+            # Nested key: value
+            stripped = line.strip()
+            if ':' in stripped:
+                k, _, v = stripped.partition(':')
+                k = k.strip()
+                v = v.strip()
+                if current_key is not None:
+                    if v.lstrip('-').isdigit():
+                        result[current_key][k] = int(v)
+                    else:
+                        result[current_key][k] = v
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Config / state helpers
+# ---------------------------------------------------------------------------
+
+def load_config(workdir: Path) -> dict:
+    config_file = workdir / '.delegate' / 'scheduler.yaml'
+    if not config_file.exists():
+        return {}
+    return parse_yaml(config_file.read_text())
+
+
+def load_state(workdir: Path) -> dict:
+    state_file = workdir / '.delegate' / 'scheduler-state.json'
+    if not state_file.exists():
+        return {}
+    try:
+        return json.loads(state_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_state(workdir: Path, state: dict) -> None:
+    state_file = workdir / '.delegate' / 'scheduler-state.json'
+    state_file.write_text(json.dumps(state, indent=2) + '\n')
+
+
+def pid_alive(pid: int) -> bool:
+    """Return True if a process with the given PID exists."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def read_pid_file(path: Path):
+    """Read a PID file; return None if missing or stale."""
+    if not path.exists():
+        return None
+    try:
+        pid = int(path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+    if pid_alive(pid):
+        return pid
+    # Stale PID file
+    path.unlink(missing_ok=True)
+    return None
+
+
+def minutes_since_last_run(job_name: str, state: dict) -> float:
+    job_state = state.get(job_name, {})
+    last_run = job_state.get('last_run')
+    if not last_run:
+        return float('inf')
+    try:
+        last_dt = datetime.fromisoformat(last_run.replace('Z', '+00:00'))
+        delta = datetime.now(timezone.utc) - last_dt
+        return delta.total_seconds() / 60.0
+    except (ValueError, TypeError):
+        return float('inf')
+
+
+# ---------------------------------------------------------------------------
+# Job management
+# ---------------------------------------------------------------------------
+
+def is_job_running(job_name: str, workdir: Path) -> bool:
+    pid_file = workdir / '.delegate' / f'{job_name}.pid'
+    return read_pid_file(pid_file) is not None
+
+
+def launch_job(job_name: str, job_config: dict, workdir: Path, state: dict) -> None:
+    template = JOB_COMMANDS.get(job_name)
+    if template is None:
+        log(workdir, f"[scheduler] Unknown job '{job_name}', skipping")
+        return
+
+    cmd = [part.replace('{workdir}', str(workdir)).replace('{script_dir}', str(SCRIPT_DIR))
+           for part in template]
+
+    env = os.environ.copy()
+    model = job_config.get('model')
+    if model:
+        env['DELEGATE_MODEL'] = model
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+    except (OSError, FileNotFoundError) as exc:
+        log(workdir, f"[scheduler] Failed to launch '{job_name}': {exc}")
+        return
+
+    pid_file = workdir / '.delegate' / f'{job_name}.pid'
+    pid_file.write_text(str(proc.pid) + '\n')
+
+    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    state.setdefault(job_name, {})
+    state[job_name]['status'] = 'running'
+    state[job_name]['pid'] = proc.pid
+    state[job_name]['last_run'] = now_iso
+    save_state(workdir, state)
+
+    log(workdir, f"[scheduler] Launched '{job_name}' (PID {proc.pid})")
+
+
+def reap_finished_jobs(jobs: dict, workdir: Path, state: dict) -> None:
+    """Check running jobs; mark finished ones as idle."""
+    changed = False
+    for job_name in jobs:
+        job_state = state.get(job_name, {})
+        if job_state.get('status') != 'running':
+            continue
+        pid_file = workdir / '.delegate' / f'{job_name}.pid'
+        if read_pid_file(pid_file) is None:
+            # Process finished
+            state[job_name]['status'] = 'idle'
+            state[job_name].pop('pid', None)
+            pid_file.unlink(missing_ok=True)
+            log(workdir, f"[scheduler] Job '{job_name}' finished")
+            changed = True
+    if changed:
+        save_state(workdir, state)
+
+
+# ---------------------------------------------------------------------------
+# Daemon loop
+# ---------------------------------------------------------------------------
+
+def daemon_loop(workdir: Path, scheduler_pid_file: Path) -> None:
+    jobs = load_config(workdir)
+    state = load_state(workdir)
+
+    def handle_shutdown(signum, frame):
+        log(workdir, "[scheduler] Shutting down...")
+        for job_name in jobs:
+            pid_file = workdir / '.delegate' / f'{job_name}.pid'
+            pid = read_pid_file(pid_file)
+            if pid is None:
+                continue
+            # Wait up to 30s for each job
+            for _ in range(30):
+                if not pid_alive(pid):
+                    break
+                time.sleep(1)
+            else:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            pid_file.unlink(missing_ok=True)
+        scheduler_pid_file.unlink(missing_ok=True)
+        log(workdir, "[scheduler] Stopped")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+
+    log(workdir, f"[scheduler] Daemon started (PID {os.getpid()})")
+
+    while True:
+        # Reload config each tick so changes take effect without restart
+        jobs = load_config(workdir)
+        state = load_state(workdir)
+
+        reap_finished_jobs(jobs, workdir, state)
+
+        for job_name, job_config in jobs.items():
+            interval = job_config.get('interval', 0)
+            if interval <= 0:
+                continue
+            if is_job_running(job_name, workdir):
+                continue
+            if minutes_since_last_run(job_name, state) >= interval:
+                launch_job(job_name, job_config, workdir, state)
+
+        time.sleep(DAEMON_SLEEP)
+
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+def cmd_start(workdir: Path) -> None:
+    delegate_dir = workdir / '.delegate'
+    delegate_dir.mkdir(parents=True, exist_ok=True)
+
+    scheduler_pid_file = delegate_dir / 'scheduler.pid'
+    existing_pid = read_pid_file(scheduler_pid_file)
+    if existing_pid is not None:
+        print(f"Scheduler already running (PID {existing_pid})")
+        sys.exit(1)
+
+    config_file = delegate_dir / 'scheduler.yaml'
+    if not config_file.exists():
+        print(f"Config not found: {config_file}")
+        sys.exit(1)
+
+    # Fork into background
+    pid = os.fork()
+    if pid > 0:
+        # Parent: write PID and exit
+        scheduler_pid_file.write_text(str(pid) + '\n')
+        print(f"Scheduler started (PID {pid})")
+        sys.exit(0)
+
+    # Child: become daemon
+    os.setsid()
+
+    # Redirect stdout/stderr to log file
+    log_file = delegate_dir / 'scheduler.log'
+    devnull_fd = os.open(os.devnull, os.O_RDONLY)
+    log_fd = os.open(str(log_file), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    os.dup2(devnull_fd, 0)
+    os.dup2(log_fd, 1)
+    os.dup2(log_fd, 2)
+    os.close(devnull_fd)
+    os.close(log_fd)
+
+    daemon_loop(workdir, scheduler_pid_file)
+
+
+def cmd_stop(workdir: Path) -> None:
+    scheduler_pid_file = workdir / '.delegate' / 'scheduler.pid'
+    pid = read_pid_file(scheduler_pid_file)
+    if pid is None:
+        print("Scheduler not running")
+        sys.exit(0)
+
+    os.kill(pid, signal.SIGTERM)
+
+    for _ in range(100):  # up to 10s
+        if not pid_alive(pid):
+            break
+        time.sleep(0.1)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    scheduler_pid_file.unlink(missing_ok=True)
+    print("Scheduler stopped")
+
+
+def cmd_status(workdir: Path) -> None:
+    scheduler_pid_file = workdir / '.delegate' / 'scheduler.pid'
+    pid = read_pid_file(scheduler_pid_file)
+    if pid is None:
+        print("Scheduler not running")
+        return
+
+    print(f"Scheduler running (PID {pid})")
+    print()
+
+    state = load_state(workdir)
+    jobs = load_config(workdir)
+
+    if not jobs:
+        print("No jobs configured")
+        return
+
+    now = datetime.now(timezone.utc)
+    print(f"{'Job':<20} {'Status':<10} {'Last Run':<25} {'Next Run'}")
+    print('-' * 80)
+
+    for job_name, job_config in jobs.items():
+        interval = job_config.get('interval', 0)
+        job_state = state.get(job_name, {})
+        status = job_state.get('status', 'idle')
+        last_run = job_state.get('last_run', 'never')
+
+        if interval <= 0:
+            next_run = 'disabled'
+        elif status == 'running':
+            next_run = 'running'
+        elif last_run == 'never':
+            next_run = 'soon'
+        else:
+            try:
+                last_dt = datetime.fromisoformat(last_run.replace('Z', '+00:00'))
+                delta_s = interval * 60 - (now - last_dt).total_seconds()
+                if delta_s <= 0:
+                    next_run = 'now'
+                else:
+                    mins = int(delta_s / 60)
+                    next_run = f"in {mins}m"
+            except (ValueError, TypeError):
+                next_run = 'unknown'
+
+        print(f"{job_name:<20} {status:<10} {last_run:<25} {next_run}")
+
+
+def cmd_config(workdir: Path) -> None:
+    config_file = workdir / '.delegate' / 'scheduler.yaml'
+    if not config_file.exists():
+        print(f"Config not found: {config_file}")
+        sys.exit(1)
+    print(config_file.read_text(), end='')
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    if len(sys.argv) < 3:
+        print(__doc__)
+        sys.exit(1)
+
+    subcommand = sys.argv[1]
+    workdir = Path(sys.argv[2]).resolve()
+
+    dispatch = {
+        'start': cmd_start,
+        'stop': cmd_stop,
+        'status': cmd_status,
+        'config': cmd_config,
+    }
+
+    fn = dispatch.get(subcommand)
+    if fn is None:
+        print(f"Unknown subcommand: {subcommand}")
+        print(f"Valid subcommands: {', '.join(dispatch)}")
+        sys.exit(1)
+
+    fn(workdir)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,621 @@
+#!/usr/bin/env python3
+"""delegate-research — Deep web research on a codebase using JINA search and reader APIs.
+
+Usage:
+  delegate-research scan <workdir> [--file <path>] [--model <model>]
+  delegate-research list <workdir> [--category <cat>] [--severity <level>]
+  delegate-research apply <workdir> <finding-id>
+  delegate-research dismiss <workdir> <finding-id>
+  delegate-research prune <workdir>
+"""
+
+import sys
+import os
+import json
+import re
+import fcntl
+import hashlib
+import subprocess
+import time
+import urllib.request
+import urllib.parse
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+DEFAULT_MODEL = 'glm/glm-5.1'
+
+FILE_EXTENSIONS = {
+    '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.kt',
+    '.rb', '.php', '.cpp', '.c', '.h', '.hpp', '.cs', '.swift', '.scala',
+    '.sh', '.bash', '.zsh', '.fish', '.lua', '.r', '.jl', '.ml', '.ex',
+    '.exs', '.clj', '.cljs', '.hs', '.elm', '.dart', '.vue', '.svelte',
+    '.toml', '.yaml', '.yml', '.json', '.dockerfile', '.tf', '.hcl',
+}
+
+SKIP_DIRS = {
+    '.git', '.svn', '__pycache__', 'node_modules', '.venv', 'venv',
+    '.env', 'dist', 'build', '.next', '.nuxt', 'target', 'vendor',
+    '.delegate', '.cache', 'coverage', '.pytest_cache', '.mypy_cache',
+}
+
+# ── JINA integration ──────────────────────────────────────────────────────────
+
+def jina_search(query: str) -> str:
+    """Search via JINA. Returns markdown search results."""
+    url = f"https://s.jina.ai/{urllib.parse.quote(query)}"
+    try:
+        req = urllib.request.Request(url, headers={'Accept': 'text/plain'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.read().decode('utf-8', errors='replace')[:8000]
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+def jina_search_with_retry(query: str) -> str:
+    """Search via JINA with one retry on failure (429 rate limit → 5s wait)."""
+    result = jina_search(query)
+    if 'rate limit' in result.lower() or '429' in result or 'Search failed' in result:
+        time.sleep(5)
+        result = jina_search(query)
+    return result
+
+
+def jina_read(url: str) -> str:
+    """Read a URL via JINA reader. Returns markdown of the page."""
+    reader_url = f"https://r.jina.ai/{url}"
+    try:
+        req = urllib.request.Request(reader_url, headers={'Accept': 'text/plain'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.read().decode('utf-8', errors='replace')[:4000]
+    except Exception as e:
+        return f"Read failed: {e}"
+
+
+def jina_read_with_retry(url: str) -> str:
+    """Read a URL via JINA with one retry on failure."""
+    result = jina_read(url)
+    if 'rate limit' in result.lower() or '429' in result or 'Read failed' in result:
+        time.sleep(5)
+        result = jina_read(url)
+    return result
+
+
+# ── File discovery ────────────────────────────────────────────────────────────
+
+def discover_files(workdir: str, cap: int = 20) -> list:
+    """Walk tree, skip dirs, filter extensions, sort by mtime. Cap at `cap` files."""
+    root = Path(workdir)
+    candidates = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Skip known noisy directories
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fname in filenames:
+            fpath = Path(dirpath) / fname
+            suffix = fpath.suffix.lower()
+            # Include files with known extensions, or extensionless scripts
+            if suffix in FILE_EXTENSIONS or (not suffix and fpath.stat().st_size < 100_000):
+                try:
+                    mtime = fpath.stat().st_mtime
+                    candidates.append((mtime, fpath))
+                except OSError:
+                    continue
+
+    # Sort by mtime descending (newest first)
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return [str(p) for _, p in candidates[:cap]]
+
+
+# ── Research JSONL storage ────────────────────────────────────────────────────
+
+def get_research_path(workdir: str) -> Path:
+    log = Path(workdir) / '.delegate' / 'research.jsonl'
+    log.parent.mkdir(parents=True, exist_ok=True)
+    if not log.exists():
+        log.touch()
+    return log
+
+
+def load_findings(workdir: str) -> list:
+    log = get_research_path(workdir)
+    findings = []
+    for line in log.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            findings.append(json.loads(line))
+        except Exception:
+            continue
+    return findings
+
+
+def append_findings(workdir: str, new_findings: list):
+    """Append new findings to the JSONL file with file locking."""
+    if not new_findings:
+        return
+    log = get_research_path(workdir)
+    with open(log, 'a') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            for finding in new_findings:
+                f.write(json.dumps(finding) + '\n')
+            f.flush()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def update_finding(workdir: str, finding_id: str, updates: dict):
+    """Read all findings, update the matching one, rewrite the file."""
+    log = get_research_path(workdir)
+    findings = load_findings(workdir)
+    matched = False
+    for f in findings:
+        if f.get('id', '').startswith(finding_id):
+            f.update(updates)
+            matched = True
+            break
+    if not matched:
+        print(f"Finding '{finding_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+    with open(log, 'w') as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            for f in findings:
+                fh.write(json.dumps(f) + '\n')
+            fh.flush()
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def make_finding_id(file: str, topic: str, finding: str) -> str:
+    """SHA-256 of file:topic:finding[:50], first 8 chars."""
+    key = f"{file}:{topic}:{finding[:50]}"
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()[:8]
+
+
+# ── Codex exec integration ────────────────────────────────────────────────────
+
+def extract_text(output: str) -> str:
+    """Extract text content from codex --json output."""
+    text_parts = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            # Handle various codex JSON output formats
+            if isinstance(obj, dict):
+                if 'content' in obj:
+                    content = obj['content']
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get('type') == 'output_text':
+                                text_parts.append(item.get('text', ''))
+                    elif isinstance(content, str):
+                        text_parts.append(content)
+                elif 'text' in obj:
+                    text_parts.append(obj['text'])
+                elif 'message' in obj:
+                    msg = obj['message']
+                    if isinstance(msg, dict):
+                        for c in msg.get('content', []):
+                            if isinstance(c, dict) and c.get('type') == 'text':
+                                text_parts.append(c.get('text', ''))
+                    elif isinstance(msg, str):
+                        text_parts.append(msg)
+        except (json.JSONDecodeError, TypeError):
+            # Non-JSON lines might be plain text output
+            if line and not line.startswith('[') and not line.startswith('{'):
+                text_parts.append(line)
+    return '\n'.join(text_parts).strip()
+
+
+def run_codex(workdir: str, prompt: str, model: str = DEFAULT_MODEL) -> str:
+    """Run codex exec with the given prompt and return extracted text."""
+    cmd = ['codex', 'exec', '--json', '-C', workdir, '-s', 'read-only']
+    if '/' in model:
+        cmd += ['-p', model.split('/')[0]]
+    else:
+        cmd += ['-m', model]
+    cmd.append(prompt)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        return extract_text(result.stdout)
+    except FileNotFoundError:
+        print("Warning: 'codex' not found in PATH. Skipping model calls.", file=sys.stderr)
+        return ''
+    except subprocess.TimeoutExpired:
+        print("Warning: codex exec timed out.", file=sys.stderr)
+        return ''
+    except Exception as e:
+        print(f"Warning: codex exec error: {e}", file=sys.stderr)
+        return ''
+
+
+# ── Research prompts ──────────────────────────────────────────────────────────
+
+def build_topics_prompt(filepath: str, file_content: str, existing_topics: list) -> str:
+    existing_str = ', '.join(existing_topics) if existing_topics else 'none'
+    return f"""You are a technical researcher. Read this source file and identify topics worth researching for improvements.
+
+FILE: {filepath}
+CONTENT: {file_content}
+
+For each technology, library, pattern, or algorithm you find:
+- Name the topic
+- Suggest a search query to find latest best practices
+
+EXISTING RESEARCH (skip these topics):
+{existing_str}
+
+Return a JSON array:
+[{{"topic": "<name>", "query": "<search query for JINA>"}}]
+
+Maximum 5 topics per file. Output ONLY the JSON."""
+
+
+def build_findings_prompt(filepath: str, topics_and_results: list) -> str:
+    sections = []
+    for item in topics_and_results:
+        sections.append(
+            f"### {item['topic']}\n"
+            f"Search results:\n{item.get('search', '')}\n"
+            f"Deep read:\n{item.get('deep_read', '')}\n"
+        )
+    topics_str = '\n'.join(sections)
+    return f"""You researched these topics for {filepath}. Based on the search results, produce actionable findings.
+
+TOPICS AND RESULTS:
+{topics_str}
+
+Return a JSON array of findings:
+[{{
+  "file": "{filepath}",
+  "topic": "<what was researched>",
+  "category": "optimization|security|bugfix|feature|upgrade|pattern",
+  "finding": "<detailed recommendation with specific actions>",
+  "sources": ["<url1>", "<url2>"],
+  "severity": "low|medium|high",
+  "effort": "trivial|small|medium|large"
+}}]
+
+RULES:
+- Only actionable findings with concrete recommendations
+- Include source URLs for every claim
+- Skip findings that are already known (in existing research)
+- Output ONLY the JSON"""
+
+
+# ── JSON extraction ───────────────────────────────────────────────────────────
+
+def extract_json_array(text: str) -> list:
+    """Extract a JSON array from model output, tolerating markdown fences."""
+    if not text:
+        return []
+    # Strip markdown fences
+    text = re.sub(r'```(?:json)?\s*', '', text)
+    text = text.strip()
+    # Try to find array boundaries
+    start = text.find('[')
+    end = text.rfind(']')
+    if start == -1 or end == -1:
+        return []
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return []
+
+
+# ── Core per-file research flow ───────────────────────────────────────────────
+
+def research_file(workdir: str, filepath: str, model: str, existing_findings: list) -> list:
+    """Run the full research flow for one file. Returns new findings."""
+    fpath = Path(filepath)
+    if not fpath.exists():
+        print(f"  File not found: {filepath}", file=sys.stderr)
+        return []
+
+    # Read file content (cap 8KB)
+    try:
+        file_content = fpath.read_text(errors='replace')[:8192]
+    except Exception as e:
+        print(f"  Could not read {filepath}: {e}", file=sys.stderr)
+        return []
+
+    # Gather existing topics for this file to avoid repeating research
+    rel_path = str(fpath.relative_to(Path(workdir))) if fpath.is_absolute() else filepath
+    existing_topics = [
+        f.get('topic', '')
+        for f in existing_findings
+        if f.get('file') == rel_path and f.get('status') not in ('dismissed',)
+    ]
+
+    print(f"  Identifying topics for: {rel_path}")
+
+    # Phase 1: identify topics
+    topics_prompt = build_topics_prompt(rel_path, file_content, existing_topics)
+    topics_raw = run_codex(workdir, topics_prompt, model)
+    topics = extract_json_array(topics_raw)
+
+    if not topics:
+        print(f"  No topics identified (model returned nothing or non-JSON).")
+        return []
+
+    print(f"  Found {len(topics)} topic(s): {', '.join(t.get('topic', '?') for t in topics)}")
+
+    # Phase 2: JINA search for each topic
+    topics_and_results = []
+    for topic_item in topics[:5]:
+        topic = topic_item.get('topic', '')
+        query = topic_item.get('query', topic)
+        if not query:
+            continue
+
+        print(f"    Searching: {query}")
+        search_result = jina_search_with_retry(query + ' best practices 2026')
+        time.sleep(2)  # Rate limit between JINA API calls
+
+        # Extract top 2 URLs from search results
+        urls = re.findall(r'https?://[^\s\)\"\'>\]]+', search_result)
+        # Deduplicate preserving order
+        seen_urls = set()
+        unique_urls = []
+        for u in urls:
+            # Filter out jina's own URLs
+            if 'jina.ai' not in u and u not in seen_urls:
+                seen_urls.add(u)
+                unique_urls.append(u)
+
+        deep_read_parts = []
+        for url in unique_urls[:2]:
+            print(f"    Deep reading: {url[:80]}")
+            page_content = jina_read_with_retry(url)
+            deep_read_parts.append(f"URL: {url}\n{page_content}")
+            time.sleep(2)  # Rate limit
+
+        topics_and_results.append({
+            'topic': topic,
+            'query': query,
+            'search': search_result,
+            'deep_read': '\n\n'.join(deep_read_parts),
+        })
+
+    if not topics_and_results:
+        return []
+
+    # Phase 3: analyze results to produce findings
+    print(f"  Analyzing results for {rel_path}...")
+    findings_prompt = build_findings_prompt(rel_path, topics_and_results)
+    findings_raw = run_codex(workdir, findings_prompt, model)
+    raw_findings = extract_json_array(findings_raw)
+
+    if not raw_findings:
+        print(f"  No actionable findings produced.")
+        return []
+
+    # Build structured findings with IDs and timestamps
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    existing_ids = {f.get('id') for f in existing_findings}
+    new_findings = []
+
+    for rf in raw_findings:
+        finding_text = rf.get('finding', '')
+        topic_text = rf.get('topic', '')
+        file_text = rf.get('file', rel_path)
+
+        if not finding_text or not topic_text:
+            continue
+
+        fid = make_finding_id(file_text, topic_text, finding_text)
+        if fid in existing_ids:
+            print(f"  Skipping duplicate finding: {fid} ({topic_text})")
+            continue
+
+        finding = {
+            'id': fid,
+            'file': file_text,
+            'topic': topic_text,
+            'category': rf.get('category', 'pattern'),
+            'finding': finding_text,
+            'sources': rf.get('sources', []),
+            'severity': rf.get('severity', 'low'),
+            'effort': rf.get('effort', 'medium'),
+            'timestamp': now,
+            'status': 'open',
+        }
+        new_findings.append(finding)
+        existing_ids.add(fid)
+
+    print(f"  -> {len(new_findings)} new finding(s) for {rel_path}")
+    return new_findings
+
+
+# ── Subcommands ───────────────────────────────────────────────────────────────
+
+def cmd_scan(workdir: str, file_arg: str = '', model: str = ''):
+    """Scan a file or top 20 files, run research, append findings."""
+    if not model:
+        model = os.environ.get('DELEGATE_RESEARCH_MODEL', DEFAULT_MODEL)
+
+    workdir = os.path.abspath(workdir)
+    existing_findings = load_findings(workdir)
+
+    if file_arg:
+        files = [os.path.abspath(file_arg)]
+    else:
+        files = discover_files(workdir, cap=20)
+
+    if not files:
+        print("No files to research.")
+        return
+
+    print(f"[delegate-research] Scanning {len(files)} file(s) with model={model}")
+    total_new = 0
+
+    for filepath in files:
+        new_findings = research_file(workdir, filepath, model, existing_findings)
+        if new_findings:
+            append_findings(workdir, new_findings)
+            existing_findings.extend(new_findings)
+            total_new += len(new_findings)
+
+    print(f"\n[delegate-research] Done. {total_new} new finding(s) appended to .delegate/research.jsonl")
+
+
+def cmd_list(workdir: str, category: str = '', severity: str = ''):
+    """Print open findings, optionally filtered by category or severity."""
+    findings = load_findings(workdir)
+    open_findings = [f for f in findings if f.get('status', 'open') == 'open']
+
+    if category:
+        open_findings = [f for f in open_findings if f.get('category') == category]
+    if severity:
+        open_findings = [f for f in open_findings if f.get('severity') == severity]
+
+    if not open_findings:
+        print("No findings.")
+        return
+
+    # Sort by severity (high → medium → low)
+    sev_order = {'high': 0, 'medium': 1, 'low': 2}
+    open_findings.sort(key=lambda f: (sev_order.get(f.get('severity', 'low'), 3), f.get('timestamp', '')))
+
+    print(f"{'=' * 72}")
+    print(f"  RESEARCH FINDINGS  ({len(open_findings)} open)")
+    print(f"{'=' * 72}")
+
+    for f in open_findings:
+        print(f"\n[{f['id']}]  {f.get('severity', '?').upper()}  |  {f.get('category', '?')}  |  effort: {f.get('effort', '?')}")
+        print(f"  File:    {f.get('file', '?')}")
+        print(f"  Topic:   {f.get('topic', '?')}")
+        print(f"  Finding: {f.get('finding', '?')}")
+        sources = f.get('sources', [])
+        if sources:
+            print(f"  Sources:")
+            for src in sources:
+                print(f"    - {src}")
+        print(f"  Date:    {f.get('timestamp', '?')[:10]}")
+
+    print(f"\n{'=' * 72}")
+
+
+def cmd_apply(workdir: str, finding_id: str):
+    """Mark a finding as applied."""
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    update_finding(workdir, finding_id, {'status': 'applied', 'applied_at': now})
+    print(f"Finding '{finding_id}' marked as applied.")
+
+
+def cmd_dismiss(workdir: str, finding_id: str):
+    """Mark a finding as dismissed."""
+    update_finding(workdir, finding_id, {'status': 'dismissed'})
+    print(f"Finding '{finding_id}' dismissed.")
+
+
+def cmd_prune(workdir: str):
+    """Remove findings older than 30 days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    findings = load_findings(workdir)
+    kept = []
+    removed = 0
+    for f in findings:
+        ts_str = f.get('timestamp', '')
+        try:
+            ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            if ts < cutoff:
+                removed += 1
+                continue
+        except (ValueError, AttributeError):
+            pass
+        kept.append(f)
+
+    log = get_research_path(workdir)
+    with open(log, 'w') as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            for f in kept:
+                fh.write(json.dumps(f) + '\n')
+            fh.flush()
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+    print(f"Pruned {removed} finding(s) older than 30 days. {len(kept)} remaining.")
+
+
+# ── CLI entry point ───────────────────────────────────────────────────────────
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+    subcmd = args[0]
+
+    if subcmd == 'scan':
+        if len(args) < 2:
+            print("Usage: delegate-research scan <workdir> [--file <path>] [--model <model>]", file=sys.stderr)
+            sys.exit(1)
+        workdir = args[1]
+        file_arg = ''
+        model = ''
+        i = 2
+        while i < len(args):
+            if args[i] == '--file' and i + 1 < len(args):
+                file_arg = args[i + 1]
+                i += 2
+            elif args[i] == '--model' and i + 1 < len(args):
+                model = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        cmd_scan(workdir, file_arg, model)
+
+    elif subcmd == 'list':
+        if len(args) < 2:
+            print("Usage: delegate-research list <workdir> [--category <cat>] [--severity <level>]", file=sys.stderr)
+            sys.exit(1)
+        workdir = args[1]
+        category = ''
+        severity = ''
+        i = 2
+        while i < len(args):
+            if args[i] == '--category' and i + 1 < len(args):
+                category = args[i + 1]
+                i += 2
+            elif args[i] == '--severity' and i + 1 < len(args):
+                severity = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        cmd_list(workdir, category, severity)
+
+    elif subcmd == 'apply':
+        if len(args) < 3:
+            print("Usage: delegate-research apply <workdir> <finding-id>", file=sys.stderr)
+            sys.exit(1)
+        cmd_apply(args[1], args[2])
+
+    elif subcmd == 'dismiss':
+        if len(args) < 3:
+            print("Usage: delegate-research dismiss <workdir> <finding-id>", file=sys.stderr)
+            sys.exit(1)
+        cmd_dismiss(args[1], args[2])
+
+    elif subcmd == 'prune':
+        if len(args) < 2:
+            print("Usage: delegate-research prune <workdir>", file=sys.stderr)
+            sys.exit(1)
+        cmd_prune(args[1])
+
+    else:
+        print(f"Unknown subcommand: {subcmd}", file=sys.stderr)
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

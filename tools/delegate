@@ -79,6 +79,20 @@ echo "=========================="
 PROMPT_FILE=$(mktemp /tmp/delegate-prompt-XXXXXX.txt)
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
+# Prepend knowledge base and project brief to the prompt (context injection)
+KNOWLEDGE_FILE="$WORKDIR/.delegate/knowledge.md"
+BRIEF_FILE="$WORKDIR/.delegate/project-brief.md"
+if [ -f "$KNOWLEDGE_FILE" ] || [ -f "$BRIEF_FILE" ]; then
+  CONTEXT_FILE=$(mktemp /tmp/delegate-context-XXXXXX.txt)
+  {
+    [ -f "$KNOWLEDGE_FILE" ] && echo "--- CODEBASE KNOWLEDGE ---" && cat "$KNOWLEDGE_FILE" && echo ""
+    [ -f "$BRIEF_FILE" ] && echo "--- PROJECT BRIEF ---" && cat "$BRIEF_FILE" && echo ""
+    echo "--- TASK ---"
+    cat "$PROMPT_FILE"
+  } > "$CONTEXT_FILE"
+  mv "$CONTEXT_FILE" "$PROMPT_FILE"
+fi
+
 # Stats handoff file: adapter writes JSON here; bash reads it for the log.
 DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX.json)
 printf '{}' > "$DELEGATE_STATS_FILE"
@@ -350,6 +364,17 @@ tok = entry.get('tokens_total', '?')
 saved = entry['cost_claude_eq'] - entry.get('cost_usd', 0)
 saved_str = f', saved ~${saved:.4f} vs Claude' if saved > 0 else ''
 print(f'[log] → {LOG}  ({tok} tokens, exit {entry["exit_code"]}, {duration}s{saved_str})')
+
+# Knowledge staleness counter
+meta_path = Path(os.environ.get('DELEGATE_WORKDIR', '')) / '.delegate' / 'knowledge-meta.json'
+try:
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta['delegations_since'] = meta.get('delegations_since', 0) + 1
+    meta_path.write_text(json.dumps(meta))
+    if meta['delegations_since'] >= 5:
+        print(f"[knowledge] {meta['delegations_since']} delegations since last reindex — consider /vibe-reindex")
+except Exception:
+    pass
 PYLOG
 
 # Cleanup checkpoint on success; keep on failure for manual rollback
