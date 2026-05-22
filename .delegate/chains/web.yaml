@@ -1,30 +1,37 @@
 name: web
-description: SOTA decomposes topic → 4 agents search in parallel → GLM aggregates
+description: SOTA decomposes topic → 4 agents search sequentially → GLM aggregates
 
 steps:
   - role: decomposer
     sota: true
-    prompt_template: "Decompose this research topic into 3-4 specific, searchable subtopics.\n\nTOPIC: {task}\n\nFor each subtopic, write a focused search query that would find the most relevant, recent (2025-2026) information. Think about: what are the key dimensions of this topic? What related areas should we explore? What specific questions need answers?\n\nWrite your output as a simple list to .delegate/plan.md:\nSubtopic 1: <search query 1>\nSubtopic 2: <search query 2>\nSubtopic 3: <search query 3>\nSubtopic 4: <search query 4>"
+    prompt_template: "Decompose this research topic into 4 specific, searchable subtopics.\n\nTOPIC: {task}\n\nFor each subtopic, write a focused search query that would find the most relevant, recent (2025-2026) information.\n\nWrite to .delegate/plan.md:\nSubtopic 1: <search query 1>\nSubtopic 2: <search query 2>\nSubtopic 3: <search query 3>\nSubtopic 4: <search query 4>"
 
-  - role: researcher
-    prompt_template: "Search the web for information on: {task}\n\nUse JINA web search to find relevant results. For each subtopic in the plan, search thoroughly and collect key findings with source URLs.\n\nPLAN:\n{plan}\n\nFor EACH subtopic listed in the plan:\n1. Search using the query provided\n2. Read the top 2-3 results in depth\n3. Extract key facts, data points, and recommendations\n4. Note the source URL for every claim\n\nWrite ALL findings to a file at .delegate/web-research-raw.md organized by subtopic."
-    parallel:
-      workers:
-        - harness: codex
-          model: minimax/MiniMax-M2.7
-        - harness: codex
-          model: minimax/MiniMax-M2.7
-        - harness: codex
-          model: glm/glm-5.1
-        - harness: codex
-          model: glm/glm-5.1
-      judge:
-        harness: codex
-        model: glm/glm-5.1
+  - role: researcher-1
+    harness: codex
+    model: minimax/MiniMax-M2.7
     turns: 0
+    prompt_template: "You are researcher 1 of 4. Search the web for SUBTOPIC 1 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the FIRST subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 1 (Researcher 1)'"
+
+  - role: researcher-2
+    harness: codex
+    model: minimax/MiniMax-M2.7
+    turns: 0
+    prompt_template: "You are researcher 2 of 4. Search the web for SUBTOPIC 2 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the SECOND subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 2 (Researcher 2)'"
+
+  - role: researcher-3
+    harness: codex
+    model: glm/glm-5.1
+    turns: 0
+    prompt_template: "You are researcher 3 of 4. Search the web for SUBTOPIC 3 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the THIRD subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 3 (Researcher 3)'"
+
+  - role: researcher-4
+    harness: codex
+    model: glm/glm-5.1
+    turns: 0
+    prompt_template: "You are researcher 4 of 4. Search the web for SUBTOPIC 4 from the plan.\n\nPLAN:\n{plan}\n\nSearch for the FOURTH subtopic only. Use JINA web search. Read the top 2-3 results in depth. Extract key facts with source URLs.\n\nAppend your findings to .delegate/web-research-raw.md under a header '## Subtopic 4 (Researcher 4)'"
 
   - role: aggregator
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "Aggregate and organize web research results.\n\nORIGINAL TOPIC: {task}\n\nSUBTOPICS RESEARCHED:\n{plan}\n\nRead the raw research file at .delegate/web-research-raw.md and produce a clean, organized summary.\n\nWrite the final report to .delegate/web-research-report.md with:\n\n## Summary\n[2-3 sentence executive summary]\n\n## Key Findings\n[Organized by subtopic, deduplicated, with source citations]\n\n## Recommendations\n[Actionable takeaways based on the research]\n\n## Sources\n[All URLs cited, grouped by subtopic]\n\nRULES:\n- Remove duplicate information (same fact from multiple workers)\n- Keep the most detailed/authoritative version of each finding\n- Every claim must have a source URL\n- Be concise but complete\n- Format for easy consumption by a senior engineer"
+    prompt_template: "Aggregate and organize web research results.\n\nORIGINAL TOPIC: {task}\n\nSUBTOPICS:\n{plan}\n\nRead .delegate/web-research-raw.md (all 4 researchers' findings) and produce a clean report.\n\nWrite to .delegate/web-research-report.md:\n\n## Summary\n[2-3 sentence executive summary]\n\n## Key Findings\n[Organized by subtopic, deduplicated, with source citations]\n\n## Recommendations\n[Actionable takeaways]\n\n## Sources\n[All URLs cited]\n\nRemove duplicates. Keep the most detailed version of each finding. Every claim must have a source URL."
