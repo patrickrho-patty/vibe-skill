@@ -267,7 +267,12 @@ def daemon_loop(workdir: Path, scheduler_pid_file: Path) -> None:
 
         reap_finished_jobs(jobs, workdir, state)
 
+        only = os.environ.get('DELEGATE_SCHEDULER_ONLY', '')
+        only_set = set(only.split(',')) if only else None
+
         for job_name, job_config in jobs.items():
+            if only_set and job_name not in only_set:
+                continue
             interval = job_config.get('interval', 0)
             if interval <= 0:
                 continue
@@ -401,6 +406,47 @@ def cmd_config(workdir: Path) -> None:
     print(config_file.read_text(), end='')
 
 
+def cmd_run(workdir: Path, job_names: list) -> None:
+    """Run specific jobs once (no daemon, no scheduling)."""
+    config_file = workdir / '.delegate' / 'scheduler.yaml'
+    if not config_file.exists():
+        print(f"Config not found: {config_file}")
+        sys.exit(1)
+
+    jobs = parse_config(config_file)
+    state = load_state(workdir)
+    valid_jobs = list(jobs.keys())
+
+    if not job_names:
+        print(f"Usage: delegate-scheduler run <workdir> <job1> [job2] [job3]")
+        print(f"Available jobs: {', '.join(valid_jobs)}")
+        sys.exit(1)
+
+    for name in job_names:
+        if name not in jobs:
+            print(f"Unknown job: {name}. Available: {', '.join(valid_jobs)}")
+            sys.exit(1)
+
+    for name in job_names:
+        config = jobs[name]
+        print(f"Running: {name} (model: {config.get('model', 'default')})")
+        launch_job(name, config, workdir, state)
+
+    # Wait for all launched jobs to finish
+    print("Waiting for jobs to complete...")
+    while True:
+        all_done = True
+        for name in job_names:
+            if is_job_running(name, workdir):
+                all_done = False
+                break
+        if all_done:
+            break
+        time.sleep(5)
+
+    print("Done.")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -408,13 +454,41 @@ def cmd_config(workdir: Path) -> None:
 def main() -> None:
     if len(sys.argv) < 3:
         print(__doc__)
+        print("\nSubcommands:")
+        print("  start <workdir> [--only job1,job2]   Start scheduler daemon")
+        print("  stop <workdir>                       Stop scheduler daemon")
+        print("  status <workdir>                     Show job status")
+        print("  config <workdir>                     Show scheduler config")
+        print("  run <workdir> <job1> [job2] [job3]   Run specific jobs once")
+        print("\nJobs: audit, research, knowledge_update")
+        print("\nExamples:")
+        print("  delegate-scheduler start .                      # all jobs")
+        print("  delegate-scheduler start . --only audit,research")
+        print("  delegate-scheduler run . audit                  # one-shot audit")
+        print("  delegate-scheduler run . audit research         # one-shot both")
         sys.exit(1)
 
     subcommand = sys.argv[1]
     workdir = Path(sys.argv[2]).resolve()
 
+    if subcommand == 'run':
+        job_names = sys.argv[3:]
+        cmd_run(workdir, job_names)
+        return
+
+    if subcommand == 'start':
+        # Check for --only flag
+        only_jobs = None
+        for i, arg in enumerate(sys.argv[3:], 3):
+            if arg == '--only' and i + 1 < len(sys.argv):
+                only_jobs = sys.argv[i + 1].split(',')
+                break
+        if only_jobs is not None:
+            os.environ['DELEGATE_SCHEDULER_ONLY'] = ','.join(only_jobs)
+        cmd_start(workdir)
+        return
+
     dispatch = {
-        'start': cmd_start,
         'stop': cmd_stop,
         'status': cmd_status,
         'config': cmd_config,
@@ -423,7 +497,7 @@ def main() -> None:
     fn = dispatch.get(subcommand)
     if fn is None:
         print(f"Unknown subcommand: {subcommand}")
-        print(f"Valid subcommands: {', '.join(dispatch)}")
+        print(f"Valid: start, stop, status, config, run")
         sys.exit(1)
 
     fn(workdir)
