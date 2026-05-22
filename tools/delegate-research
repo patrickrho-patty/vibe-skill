@@ -237,19 +237,42 @@ def run_codex(workdir: str, prompt: str, model: str = DEFAULT_MODEL) -> str:
 
 # ── Research prompts ──────────────────────────────────────────────────────────
 
-def build_topics_prompt(filepath: str, file_content: str, existing_topics: list) -> str:
-    existing_str = ', '.join(existing_topics) if existing_topics else 'none'
+def format_existing_research(existing_findings: list, filepath: str = '') -> str:
+    """Format existing findings as context for the model, including dates."""
+    relevant = [f for f in existing_findings if f.get('status') not in ('dismissed',)]
+    if filepath:
+        relevant = [f for f in relevant if f.get('file') == filepath] + \
+                   [f for f in relevant if f.get('file') != filepath]
+    if not relevant:
+        return 'none'
+    lines = []
+    for f in relevant[:30]:
+        date = f.get('timestamp', '?')[:10]
+        topic = f.get('topic', '?')
+        finding_short = f.get('finding', '')[:100]
+        sources = ', '.join(f.get('sources', [])[:2])
+        lines.append(f"- [{date}] {topic}: {finding_short} (sources: {sources})")
+    return '\n'.join(lines)
+
+
+def build_topics_prompt(filepath: str, file_content: str, existing_findings: list) -> str:
+    existing_context = format_existing_research(existing_findings, filepath)
     return f"""You are a technical researcher. Read this source file and identify topics worth researching for improvements.
 
 FILE: {filepath}
 CONTENT: {file_content}
 
-For each technology, library, pattern, or algorithm you find:
-- Name the topic
-- Suggest a search query to find latest best practices
+EXISTING RESEARCH (already found — listed with dates and sources):
+{existing_context}
 
-EXISTING RESEARCH (skip these topics):
-{existing_str}
+INSTRUCTIONS:
+- Identify technologies, libraries, patterns, or algorithms in this file
+- For each, suggest a search query to find LATEST (2025-2026) best practices
+- If a topic was already researched (listed above), ONLY include it if you
+  believe there may be NEWER information available (newer papers, newer versions,
+  newer techniques published AFTER the date shown)
+- Do NOT re-research topics where the existing finding is recent (<14 days old)
+  and the sources are current
 
 Return a JSON array:
 [{{"topic": "<name>", "query": "<search query for JINA>"}}]
@@ -257,7 +280,7 @@ Return a JSON array:
 Maximum 5 topics per file. Output ONLY the JSON."""
 
 
-def build_findings_prompt(filepath: str, topics_and_results: list) -> str:
+def build_findings_prompt(filepath: str, topics_and_results: list, existing_findings: list) -> str:
     sections = []
     for item in topics_and_results:
         sections.append(
@@ -266,7 +289,11 @@ def build_findings_prompt(filepath: str, topics_and_results: list) -> str:
             f"Deep read:\n{item.get('deep_read', '')}\n"
         )
     topics_str = '\n'.join(sections)
+    existing_context = format_existing_research(existing_findings, filepath)
     return f"""You researched these topics for {filepath}. Based on the search results, produce actionable findings.
+
+EXISTING RESEARCH (already found — with dates):
+{existing_context}
 
 TOPICS AND RESULTS:
 {topics_str}
@@ -279,13 +306,21 @@ Return a JSON array of findings:
   "finding": "<detailed recommendation with specific actions>",
   "sources": ["<url1>", "<url2>"],
   "severity": "low|medium|high",
-  "effort": "trivial|small|medium|large"
+  "effort": "trivial|small|medium|large",
+  "novelty": "new|update|duplicate"
 }}]
 
 RULES:
 - Only actionable findings with concrete recommendations
 - Include source URLs for every claim
-- Skip findings that are already known (in existing research)
+- For each finding, classify its novelty:
+  - "new": topic not previously researched, or entirely new technique
+  - "update": same topic as existing research, but NEWER information (newer
+    paper, newer version, newer benchmark published after the existing date)
+  - "duplicate": same information as existing research, no new insight
+- ONLY include findings where novelty is "new" or "update"
+- DO NOT include "duplicate" findings
+- For "update" findings: mention what changed since the previous research
 - Output ONLY the JSON"""
 
 
@@ -311,7 +346,35 @@ def extract_json_array(text: str) -> list:
 
 # ── Core per-file research flow ───────────────────────────────────────────────
 
-def research_file(workdir: str, filepath: str, model: str, existing_findings: list) -> list:
+def build_quality_gate_prompt(findings: list, existing_findings: list) -> str:
+    """Build a prompt for the quality gate model to filter findings."""
+    existing_context = format_existing_research(existing_findings)
+    findings_str = json.dumps(findings, indent=2)
+    return f"""You are a research quality gate. Review these findings and classify each one.
+
+EXISTING RESEARCH (what we already know):
+{existing_context}
+
+NEW FINDINGS TO EVALUATE:
+{findings_str}
+
+For EACH finding, decide:
+- "keep": genuinely new, actionable, high-impact information
+- "update": same topic as existing but with newer/better information — KEEP but mark as update
+- "reject": duplicate of existing research, low-impact, too vague, or not actionable
+
+Return a JSON array with the SAME findings but with an added "gate" field:
+[{{"gate": "keep|update|reject", "reason": "<1 sentence why>", ...rest of finding}}]
+
+RULES:
+- Be STRICT. Only "keep" findings that a senior engineer would act on
+- "update" findings must cite a SOURCE that is NEWER than the existing research date
+- Reject anything vague like "consider using X" without specific benchmarks or evidence
+- Reject anything that restates what's already in existing research without new info
+- Output ONLY the JSON"""
+
+
+def research_file(workdir: str, filepath: str, model: str, existing_findings: list, quality_model: str = '') -> list:
     """Run the full research flow for one file. Returns new findings."""
     fpath = Path(filepath)
     if not fpath.exists():
@@ -325,18 +388,12 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
         print(f"  Could not read {filepath}: {e}", file=sys.stderr)
         return []
 
-    # Gather existing topics for this file to avoid repeating research
     rel_path = str(fpath.relative_to(Path(workdir))) if fpath.is_absolute() else filepath
-    existing_topics = [
-        f.get('topic', '')
-        for f in existing_findings
-        if f.get('file') == rel_path and f.get('status') not in ('dismissed',)
-    ]
 
     print(f"  Identifying topics for: {rel_path}")
 
-    # Phase 1: identify topics
-    topics_prompt = build_topics_prompt(rel_path, file_content, existing_topics)
+    # Phase 1: identify topics (pass ALL existing findings for context)
+    topics_prompt = build_topics_prompt(rel_path, file_content, existing_findings)
     topics_raw = run_codex(workdir, topics_prompt, model)
     topics = extract_json_array(topics_raw)
 
@@ -386,9 +443,9 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
     if not topics_and_results:
         return []
 
-    # Phase 3: analyze results to produce findings
+    # Phase 3: analyze results to produce findings (with existing research context)
     print(f"  Analyzing results for {rel_path}...")
-    findings_prompt = build_findings_prompt(rel_path, topics_and_results)
+    findings_prompt = build_findings_prompt(rel_path, topics_and_results, existing_findings)
     findings_raw = run_codex(workdir, findings_prompt, model)
     raw_findings = extract_json_array(findings_raw)
 
@@ -396,12 +453,41 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
         print(f"  No actionable findings produced.")
         return []
 
+    # Filter out self-declared duplicates
+    raw_findings = [f for f in raw_findings if f.get('novelty') != 'duplicate']
+
+    if not raw_findings:
+        print(f"  All findings were duplicates of existing research.")
+        return []
+
+    # Phase 4: Quality gate — use a different cheap model to filter
+    qmodel = quality_model or os.environ.get('DELEGATE_RESEARCH_QUALITY_MODEL', 'minimax/MiniMax-M2.7')
+    print(f"  Running quality gate ({qmodel})...")
+    gate_prompt = build_quality_gate_prompt(raw_findings, existing_findings)
+    gate_raw = run_codex(workdir, gate_prompt, qmodel)
+    gated_findings = extract_json_array(gate_raw)
+
+    # If quality gate fails to parse, fall back to raw findings
+    if not gated_findings:
+        print(f"  Quality gate returned nothing — using raw findings")
+        gated_findings = raw_findings
+
+    # Only keep findings that passed the gate
+    kept = [f for f in gated_findings if f.get('gate') in ('keep', 'update')]
+    rejected = len(gated_findings) - len(kept)
+    if rejected > 0:
+        print(f"  Quality gate rejected {rejected} finding(s)")
+
+    if not kept:
+        print(f"  No findings survived quality gate.")
+        return []
+
     # Build structured findings with IDs and timestamps
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     existing_ids = {f.get('id') for f in existing_findings}
     new_findings = []
 
-    for rf in raw_findings:
+    for rf in kept:
         finding_text = rf.get('finding', '')
         topic_text = rf.get('topic', '')
         file_text = rf.get('file', rel_path)
@@ -411,7 +497,22 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
 
         fid = make_finding_id(file_text, topic_text, finding_text)
         if fid in existing_ids:
-            print(f"  Skipping duplicate finding: {fid} ({topic_text})")
+            continue
+
+        # Word overlap check against existing findings on same topic
+        is_semantic_dup = False
+        for ef in existing_findings:
+            if ef.get('topic', '').lower() == topic_text.lower() and ef.get('status') != 'dismissed':
+                existing_words = set(ef.get('finding', '').lower().split())
+                new_words = set(finding_text.lower().split())
+                if existing_words and new_words:
+                    overlap = len(existing_words & new_words) / max(len(existing_words), len(new_words))
+                    if overlap > 0.7 and rf.get('gate') != 'update':
+                        is_semantic_dup = True
+                        break
+
+        if is_semantic_dup:
+            print(f"  Skipping semantic duplicate: {topic_text}")
             continue
 
         finding = {
@@ -423,6 +524,7 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
             'sources': rf.get('sources', []),
             'severity': rf.get('severity', 'low'),
             'effort': rf.get('effort', 'medium'),
+            'novelty': rf.get('gate', rf.get('novelty', 'new')),
             'timestamp': now,
             'status': 'open',
         }
@@ -435,24 +537,60 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
 
 # ── Subcommands ───────────────────────────────────────────────────────────────
 
+def load_scan_state(workdir: str) -> dict:
+    """Load last scan timestamps per file."""
+    state_path = Path(workdir) / '.delegate' / 'research-state.json'
+    if state_path.exists():
+        try:
+            return json.loads(state_path.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def save_scan_state(workdir: str, state: dict):
+    """Save scan state."""
+    state_path = Path(workdir) / '.delegate' / 'research-state.json'
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state))
+
+
 def cmd_scan(workdir: str, file_arg: str = '', model: str = ''):
-    """Scan a file or top 20 files, run research, append findings."""
+    """Scan changed files, run research, filter through quality gate, append findings."""
     if not model:
         model = os.environ.get('DELEGATE_RESEARCH_MODEL', DEFAULT_MODEL)
 
     workdir = os.path.abspath(workdir)
     existing_findings = load_findings(workdir)
+    scan_state = load_scan_state(workdir)
 
     if file_arg:
         files = [os.path.abspath(file_arg)]
     else:
-        files = discover_files(workdir, cap=20)
+        all_files = discover_files(workdir, cap=50)
+        # Filter to files changed since last scan
+        files = []
+        for fpath in all_files:
+            try:
+                mtime = os.path.getmtime(fpath)
+                last_scanned = scan_state.get(fpath, 0)
+                if mtime > last_scanned:
+                    files.append(fpath)
+            except OSError:
+                continue
+
+        if not files and all_files:
+            print(f"[delegate-research] No files changed since last scan. Use --file to force.")
+            return
+        # Still cap at 20 per run
+        files = files[:20]
 
     if not files:
         print("No files to research.")
         return
 
-    print(f"[delegate-research] Scanning {len(files)} file(s) with model={model}")
+    print(f"[delegate-research] Scanning {len(files)} changed file(s) with model={model}")
+    print(f"[delegate-research] Existing research: {len(existing_findings)} finding(s)")
     total_new = 0
 
     for filepath in files:
@@ -461,7 +599,10 @@ def cmd_scan(workdir: str, file_arg: str = '', model: str = ''):
             append_findings(workdir, new_findings)
             existing_findings.extend(new_findings)
             total_new += len(new_findings)
+        # Update scan timestamp for this file
+        scan_state[filepath] = time.time()
 
+    save_scan_state(workdir, scan_state)
     print(f"\n[delegate-research] Done. {total_new} new finding(s) appended to .delegate/research.jsonl")
 
 
