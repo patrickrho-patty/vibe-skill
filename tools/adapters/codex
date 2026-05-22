@@ -55,7 +55,7 @@ if [ -n "$CODEX_MODEL_OVERRIDE" ]; then
   fi
 fi
 
-CODEX_CMD+=("$PROMPT_CONTENT")
+CODEX_CMD+=(-- "$PROMPT_CONTENT")
 
 CODEX_STDERR=$(mktemp /tmp/codex-stderr-XXXXXX)
 
