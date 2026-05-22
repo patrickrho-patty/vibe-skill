@@ -1,4 +1,4 @@
-name: cross-validate
+name: dual
 description: Same task sent to two models via Codex, orchestrator picks the best result
 
 steps:

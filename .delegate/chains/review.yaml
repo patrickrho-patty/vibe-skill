@@ -1,4 +1,4 @@
-name: multi-harness-implement
+name: review
 description: Implement with MiniMax, review with GLM, orchestrator validates
 
 steps:
