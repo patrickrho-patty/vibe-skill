@@ -97,7 +97,24 @@ a task, or pick manually. Default is `vibe` until routing data accumulates.
 ---
 
 When the user invokes `/vibe <instruction>` or `/delegate <harness> <instruction>`,
-the orchestrator delegates to the specified harness, supervises, and reports.
+the orchestrator first checks for an active mode:
+
+1. Run: `cat ~/.local/share/vibe-mode.flag 2>/dev/null`
+2. If a mode is set (e.g. `implement`, `multi-harness`, `bugfix`, etc.):
+   - Use the corresponding chain YAML from `.delegate/chains/`
+   - Run: `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" ".claude/vibe-skill/.delegate/chains/<mode-chain>.yaml"`
+   - With env: `DELEGATE_CHAIN_TASK="<user's instruction>"`
+3. If no mode is set (simple mode): delegate directly as a single call
+
+Mode mapping:
+
+| Flag value | Chain file |
+|------------|-----------|
+| `implement` | `implement.yaml` |
+| `bugfix` | `bugfix.yaml` |
+| `multi-harness` | `multi-harness-implement.yaml` |
+| `cross-validate` | `cross-validate.yaml` |
+| `defense` | `defense-in-depth.yaml` |
 
 ---
 
