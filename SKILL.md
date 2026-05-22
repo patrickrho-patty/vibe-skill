@@ -30,16 +30,27 @@ USAGE
 
 MODES (inline or persistent via /vibe-mode)
   simple      Direct delegation, no chain (default)
-  steady      SOTA plans → implement → validate
-  quick       Implement → review (no planning)
-  fix         SOTA investigates → fix → validate
-  architect   SOTA plans → implement → validate
-  fortress    SOTA plans → implement → test → security
-  ironclad    Fortress + final review (5 steps)
-  tournament  4 models race, GLM judges the winner
-  race        2 models compete on same task
-  docs        SOTA outlines → write documentation → review
-  web         SOTA decomposes topic → 4 agents search → GLM aggregates
+  steady      SOTA plans → MiniMax implements → GLM validates
+  quick       MiniMax implements → GLM reviews
+  fix         SOTA investigates → MiniMax fixes → GLM validates
+  architect   SOTA plans → MiniMax implements → GLM validates
+  fortress    SOTA plans → MiniMax implements → GLM tests → MiniMax security
+  ironclad    Fortress + GLM final review (5 steps)
+  tournament  2 MiniMax + 2 GLM race, GLM judges
+  race        MiniMax vs GLM, pick the best
+  docs        SOTA outlines → MiniMax writes → GLM reviews
+  web         SOTA decomposes → 2 MiniMax + 2 GLM search → GLM aggregates
+
+AGENTS                                   Model
+  Orchestrator (plans, reviews, judges)  Claude / Codex (SOTA)
+  Implementor / Writer                   MiniMax M2.7 (via codex -p minimax)
+  Validator / Reviewer / Aggregator      GLM 5.1 (via codex -p glm)
+
+BACKGROUND AGENTS                        Model              Interval
+  /vibe-audit scan                       MiniMax M2.7       every 30m
+  /vibe-research scan                    GLM 5.1            every 2h
+  /vibe-reindex (knowledge update)       MiniMax M2.7       every 1h
+  (configured in .delegate/scheduler.yaml)
 
 COMMANDS
   /vibe <instruction>                    Delegate a coding task
@@ -51,11 +62,11 @@ COMMANDS
   /vibestatus                            Show auto-mode + model status
   /vibe-model-pick <alias>               Override model
   /vibe-model-clear                      Clear model override
-  /vibe-report [--since N] [--fails]     Run history report
-  /vibe-reindex                          Update knowledge base
-  /vibe-audit [scan]                     Audit findings / trigger scan
-  /vibe-research [scan]                  Research findings / trigger scan
-  /vibe-scheduler start|stop|status      Manage continuous agents
+  /vibe-report [--since N] [--fails]     Run history report (local, no model)
+  /vibe-reindex                          Update knowledge base (MiniMax)
+  /vibe-audit [scan]                     Audit findings (MiniMax) / SOTA reviews
+  /vibe-research [scan]                  Research findings (GLM) / SOTA reviews
+  /vibe-scheduler start|stop|status      Manage background agents
 
 EXAMPLES
   /vibe add a login page
