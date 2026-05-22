@@ -63,9 +63,9 @@ COMMANDS
   /vibe-model-pick <alias>               Override model
   /vibe-model-clear                      Clear model override
   /vibe-report [--since N] [--fails]     Run history report (local, no model)
-  /vibe-reindex                          Update knowledge base (MiniMax)
-  /vibe-audit [scan]                     Audit findings (MiniMax) / SOTA reviews
-  /vibe-research [scan]                  Research findings (GLM) / SOTA reviews
+  /vibe-reindex [--model <m>]            Update knowledge base (default: MiniMax)
+  /vibe-audit [scan] [--model <m>]       Audit findings (default: MiniMax)
+  /vibe-research [scan] [--model <m>]    Research findings (default: GLM)
   /vibe-scheduler start|stop|status      Manage background agents
 
 EXAMPLES
