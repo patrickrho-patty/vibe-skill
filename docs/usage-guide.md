@@ -650,16 +650,18 @@ Succeeded: 3/3
 Multi-step workflows where each step's output feeds the next. Select a chain with `/vibe-mode` (or `$vibe-mode` in Codex):
 
 ```
-/vibe-mode steady     — think first, then build, then check       (plan → implement → validate)
-/vibe-mode quick      — build it, get a second opinion            (implement → review)
-/vibe-mode fix        — investigate, fix, validate                (investigate → fix → validate)
-/vibe-mode race       — two models compete, pick the winner
-/vibe-mode fortress   — the full gauntlet                         (plan → implement → test → security)
-/vibe-mode ironclad   — fortress + final validation pass          (plan → implement → test → security → final review)
-/vibe-mode simple     — just send it
+/vibe-mode steady      — SOTA plans → MiniMax implements → GLM validates
+/vibe-mode quick       — MiniMax implements → GLM reviews (no SOTA planning)
+/vibe-mode fix         — SOTA investigates → MiniMax fixes → GLM validates
+/vibe-mode race        — two models compete (no SOTA planning)
+/vibe-mode fortress    — SOTA plans → implement → test → security
+/vibe-mode ironclad    — fortress + final review (5 steps)
+/vibe-mode architect   — SOTA plans → implement → validate
+/vibe-mode tournament  — 4 workers race, GLM judges
+/vibe-mode simple      — direct delegation, no chain
 ```
 
-All chains use `harness: codex` with profiles `minimax` (MiniMax-M2.7) and `glm` (glm-5.1).
+All chains use `harness: codex` with profiles `minimax` (MiniMax-M2.7) and `glm` (glm-5.1). All chains with a planning step use `sota: true` — the orchestrator (Claude/Codex) analyzes the codebase, writes a detailed plan to `.delegate/plan.md`, and passes it to the cheap implementation model.
 
 ```bash
 # Use a pre-built chain with DELEGATE_CHAIN_TASK env var:
@@ -674,12 +676,14 @@ DELEGATE_CHAIN_TASK="add user authentication" \
 
 | Chain file | Steps |
 |------------|-------|
-| `.delegate/chains/steady.yaml` | plan → implement → validate |
-| `.delegate/chains/quick.yaml` | implement → review |
-| `.delegate/chains/fix.yaml` | investigate → fix → validate |
+| `.delegate/chains/steady.yaml` | SOTA plan → MiniMax implement → GLM validate |
+| `.delegate/chains/quick.yaml` | MiniMax implement → GLM review |
+| `.delegate/chains/fix.yaml` | SOTA investigate → MiniMax fix → GLM validate |
 | `.delegate/chains/race.yaml` | two models compete on same task |
-| `.delegate/chains/fortress.yaml` | plan → implement → test → security |
-| `.delegate/chains/ironclad.yaml` | plan → implement → test → security → final review |
+| `.delegate/chains/fortress.yaml` | SOTA plan → implement → test → security |
+| `.delegate/chains/ironclad.yaml` | SOTA plan → implement → test → security → final review |
+| `.delegate/chains/architect.yaml` | SOTA plan → MiniMax implement → GLM validate |
+| `.delegate/chains/tournament.yaml` | 4 workers race (2 MiniMax + 2 GLM), GLM judges |
 
 **Example chain file format:**
 
@@ -773,6 +777,196 @@ Turn 2:
 **Session files** are stored at `~/.local/share/delegate-sessions/<timestamp>.jsonl` and linked from the run log via the `session_file` field.
 
 **Tip:** Use `--errors` to jump straight to the turn where things went wrong, then use `--turn N` to inspect that turn in detail.
+
+---
+
+### SOTA Planning (architect mode)
+
+All chains that include a planning step use `sota: true`. The orchestrator (Claude/Codex) handles planning, writes a detailed plan to `.delegate/plan.md`, and the downstream cheap models follow it exactly.
+
+```bash
+# Set architect mode
+/vibe-mode architect
+
+# Now when you say:
+/vibe add user authentication with JWT
+
+# Claude/Codex:
+# 1. Analyzes the codebase
+# 2. Writes a detailed plan to .delegate/plan.md
+# 3. Runs delegate-chain with architect.yaml
+# 4. MiniMax follows the plan exactly
+# 5. GLM validates against the plan
+```
+
+The `steady`, `fix`, `fortress`, `ironclad`, and `architect` chains all include SOTA planning steps. The `quick`, `race`, and `tournament` chains do not.
+
+---
+
+### Knowledge Base
+
+Auto-injected project context that travels with every delegation prompt. SOTA writes the first version for accuracy; subsequent updates use a cheap model.
+
+```bash
+# Initialize (SOTA writes the first version — important for accuracy)
+python3 .claude/vibe-skill/tools/delegate-knowledge init .
+
+# Update (cheap model rewrites based on current code)
+python3 .claude/vibe-skill/tools/delegate-knowledge update .
+
+# Or use the slash command:
+/vibe-reindex
+
+# View current knowledge:
+python3 .claude/vibe-skill/tools/delegate-knowledge show .
+```
+
+The knowledge base is stored at `.delegate/knowledge.md` and auto-injected into every delegation prompt. After 5 delegations without a knowledge update, the system prints a staleness reminder.
+
+---
+
+### Background Audit
+
+Read-only scan of all project files for security, quality, and correctness concerns. Results are stored and can be acted on at any time.
+
+```bash
+# Scan all files (read-only, finds concerns)
+/vibe-audit scan
+
+# Show findings
+/vibe-audit
+
+# Or directly:
+python3 .claude/vibe-skill/tools/delegate-audit scan .
+python3 .claude/vibe-skill/tools/delegate-audit list .
+python3 .claude/vibe-skill/tools/delegate-audit stats .
+
+# Act on findings:
+python3 .claude/vibe-skill/tools/delegate-audit resolve . <finding-id>
+python3 .claude/vibe-skill/tools/delegate-audit dismiss . <finding-id>
+python3 .claude/vibe-skill/tools/delegate-audit prune .
+```
+
+Findings are stored at `.delegate/audit-findings.jsonl`. Use `resolve` after fixing an issue, `dismiss` to permanently ignore a false positive, and `prune` to remove resolved/dismissed entries.
+
+---
+
+### Continuous Research
+
+Deep web research using JINA for arxiv papers, CVE advisories, and best practices relevant to the project's stack.
+
+```bash
+# Deep web research (uses JINA for arxiv, CVEs, best practices)
+/vibe-research scan
+
+# Show findings with sources
+/vibe-research
+
+# Or directly:
+python3 .claude/vibe-skill/tools/delegate-research scan .
+python3 .claude/vibe-skill/tools/delegate-research list .
+python3 .claude/vibe-skill/tools/delegate-research apply . <finding-id>
+python3 .claude/vibe-skill/tools/delegate-research dismiss . <finding-id>
+```
+
+Findings are stored at `.delegate/research-findings.jsonl`. Use `apply` to act on a finding (delegates implementation to the chain), `dismiss` to mark as not applicable.
+
+---
+
+### Scheduler
+
+Runs audit, research, and knowledge-update agents on a recurring schedule in the background.
+
+```bash
+# Start continuous agents (audit every 30m, research every 2h, knowledge every 1h)
+/vibe-scheduler start
+
+# Check status
+/vibe-scheduler status
+
+# Stop
+/vibe-scheduler stop
+
+# View/edit config:
+cat .delegate/scheduler.yaml
+```
+
+Default `.delegate/scheduler.yaml`:
+
+```yaml
+# Scheduler configuration — how often each agent runs (in minutes)
+# Set interval to 0 to disable a job
+
+audit:
+  interval: 30
+  model: minimax/MiniMax-M2.7
+
+research:
+  interval: 120
+  model: glm/glm-5.1
+
+knowledge_update:
+  interval: 60
+  model: minimax/MiniMax-M2.7
+```
+
+Edit `interval` values to tune frequency. Set `interval: 0` to disable a job entirely.
+
+---
+
+### Parallel Workers (tournament mode)
+
+Four workers implement the same task independently in parallel git worktrees. GLM judges all four diffs and merges the winner.
+
+```bash
+/vibe-mode tournament
+/vibe add a search feature
+
+# What happens:
+# 1. 4 workers (2 MiniMax, 2 GLM) race in parallel git worktrees
+# 2. Each implements the same task independently
+# 3. GLM 5.1 judges all 4 diffs, picks the winner
+# 4. Winner's code is merged, losers discarded
+```
+
+**tournament.yaml format:**
+
+```yaml
+name: tournament
+description: 4 models race on implementation, GLM judges the winner
+
+steps:
+  - role: implementor
+    turns: 0
+    prompt_template: "Implement: {task}\n\nWrite clean, working code. Follow existing conventions."
+    parallel:
+      workers:
+        - harness: codex
+          model: minimax/MiniMax-M2.7
+        - harness: codex
+          model: minimax/MiniMax-M2.7
+        - harness: codex
+          model: glm/glm-5.1
+        - harness: codex
+          model: glm/glm-5.1
+      judge:
+        harness: codex
+        model: glm/glm-5.1
+```
+
+To create a custom parallel chain, use the same `parallel.workers` / `parallel.judge` structure in any chain YAML file.
+
+---
+
+### Codex as delegate harness
+
+Codex can serve two distinct roles in the delegation pipeline:
+
+**Orchestrator role:** Codex runs the show — reads user intent, writes delegation prompts, calls `$vibe`/`$delegate`, reviews diffs, runs corrections. Use `CODEX-SKILL.md` (installed at `.codex/AGENTS.md`) to give Codex its orchestration instructions.
+
+**Delegate role:** The `tools/adapters/codex` adapter calls `codex exec` with named model profiles (`minimax`, `glm`). When a chain step specifies `harness: codex`, the adapter is invoked with the appropriate `model` profile, which maps to a Codex exec target.
+
+This means the same `delegate-chain` script works whether Claude Code or Codex is the top-level orchestrator — the chain steps always delegate down to `codex exec` with cheap models.
 
 ---
 
@@ -904,11 +1098,45 @@ jq -r '[.model, .duration_secs] | @tsv' ~/.local/share/delegate-runs.jsonl \
 
 ---
 
+## Tools Reference
+
+All scripts live at `tools/` (symlinked to `~/tools/` on install). The full list:
+
+| Tool | Purpose |
+|------|---------|
+| `delegate` | Core delegation — invokes a harness adapter |
+| `delegate-chain` | Multi-step chains (steady, fix, architect, tournament, etc.) |
+| `delegate-parallel` | Parallel tasks across independent git worktrees |
+| `delegate-batch` | Smart batching for bulk uniform operations |
+| `delegate-knowledge` | Project knowledge base — init, update, show |
+| `delegate-audit` | Background code audit — scan, list, stats, resolve, dismiss, prune |
+| `delegate-research` | Continuous web research — scan, list, apply, dismiss |
+| `delegate-scheduler` | Runs audit/research/knowledge on a cron schedule |
+| `delegate-distill` | Context distillation — generates `.delegate/project-brief.md` |
+| `delegate-failures` | Failure memory — record, query, prune |
+| `delegate-learnings` | Learning loop — record, analyze, suggest |
+| `delegate-router` | Harness routing — classify, recommend, table |
+| `delegate-contracts` | Pre/post condition contracts — pre, post |
+| `delegate-rollback` | Checkpoint management — create, rollback, accept, cleanup |
+| `delegate-reject` | Write a correction prompt for a rejection loop |
+| `delegate-replay` | Replay a session file for debugging |
+| `delegate-dashboard` | Live activity dashboard |
+| `delegate-report` | Historical token/cost/failure report |
+| `delegate-ast-check` | Deep AST validation beyond syntax |
+| `delegate-check-duplicates` | Duplicate code detection |
+| `vibe-delegate` | Vibe-specific delegation wrapper |
+
+---
+
 ## Codex Integration
 
-Codex can act as the orchestrator instead of Claude Code — it delegates to the same harnesses (`vibe`, `pi`, `opencode`) using the same `~/tools/delegate` scripts.
+Codex can act as the orchestrator instead of Claude Code — it delegates to the same harnesses (`vibe`, `pi`, `opencode`, `codex`) using the same `~/tools/delegate` scripts.
 
 The delegation scripts are orchestrator-agnostic. The `delegate-runs.jsonl` log is shared, so `/vibe-report` and `delegate-dashboard` show runs from both Claude Code and Codex sessions.
+
+**Codex dual role:** Codex can be both orchestrator AND delegate:
+- As **orchestrator**: runs the show via `$vibe`/`$delegate` commands, reads user intent, writes delegation prompts, reviews diffs
+- As **delegate**: the `tools/adapters/codex` adapter calls `codex exec` with named model profiles (`minimax` → MiniMax-M2.7, `glm` → GLM-5.1), enabling chains where Claude/Codex orchestrates cheap Codex delegates
 
 ### Installation
 

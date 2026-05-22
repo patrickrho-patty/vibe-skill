@@ -34,6 +34,21 @@ Run independent tasks simultaneously, each in its own git worktree. File overlap
 **Multi-Step Chains**
 Define workflows like `planner -> implementor -> validator` in YAML. Each step can use a **different harness and model** — e.g., Pi (MiniMax) implements, Pi (GLM) reviews, Claude validates.
 
+**SOTA Planning (Architect Mode)**
+Every chain with a planning step uses `sota: true` — the orchestrator (Claude/Codex) writes the plan, cheap models execute it. Plan saved to `.delegate/plan.md`. Use `/vibe-mode architect` to make this explicit.
+
+**Knowledge Base**
+`/vibe-reindex` builds/updates `.delegate/knowledge.md` in four sections (Architecture, Patterns, Data Flow, Gotchas). SOTA writes the initial version; cheap models keep it current. Auto-injected into every delegation prompt.
+
+**Background Audit**
+`/vibe-audit scan` runs a read-only agent that finds bugs and code smells per-file. `/vibe-audit` shows the findings. SOTA reviews valid findings and fixes them.
+
+**Continuous Research**
+`/vibe-research scan` triggers deep web research via JINA — finds arxiv papers, CVEs, best practices, and newer alternatives. `/vibe-research` shows the accumulated findings.
+
+**Scheduler**
+`/vibe-scheduler start` runs audit, research, and knowledge-base updates continuously in the background. Configure cadence in `.delegate/scheduler.yaml`. Stop with `/vibe-scheduler stop`, check status with `/vibe-scheduler status`.
+
 </td>
 <td width="50%" valign="top">
 
@@ -57,6 +72,12 @@ Full session recording. When something goes wrong, step through the delegate's t
 
 **Live Dashboard**
 TUI dashboard showing active runs, cost burn rate, success streaks, per-harness stats, and 7-day failure trends. Uses `rich` with plain-text fallback.
+
+**Codex Adapter**
+`tools/adapters/codex` — Codex CLI as a first-class delegate harness. Uses `codex exec --json -p <profile>` for model switching. All chains now default to `harness: codex`.
+
+**Parallel Workers (Tournament Mode)**
+`/vibe-mode tournament` races 4 models simultaneously. GLM judges the results and picks the winner. Works in any chain step via a `parallel:` block in the chain YAML.
 
 **Codex Orchestrator**
 Codex CLI can be the manager too — same delegate scripts, different orchestrator. Install to `.codex/AGENTS.md` in your project.
@@ -187,10 +208,14 @@ your-project/
       SKILL.md            ← Claude Code picks this up as a skill (/vibe)
       tools/
         delegate           ← main entry point
-        adapters/          ← vibe, pi, opencode
-        delegate-*         ← all 20 tools
+        adapters/          ← codex (default), vibe, pi, opencode
+        delegate-*         ← all 25+ tools
       .delegate/
-        chains/            ← pre-built chain configs
+        chains/            ← pre-built chain configs (steady, fix, fortress, etc.)
+        plan.md            ← SOTA-written plan (created per run)
+        knowledge.md       ← project knowledge base (auto-updated)
+        project-brief.md   ← context distillation
+        scheduler.yaml     ← scheduler configuration
       .agents/
         skills/            ← Codex picks these up ($vibe, $vibeon, etc.)
           vibe/SKILL.md
@@ -259,6 +284,15 @@ Claude decomposes the task, writes the prompt, supervises execution, and reports
 /delegate-batch <task>  — smart batching for bulk tasks ("add docstrings to all functions")
 /delegate-chain <chain> — multi-step workflow (planner → implementor → validator)
 /delegate-route <desc>  — recommend best harness based on run history
+/vibe-mode <mode>       — run a pre-built chain (steady, fix, fortress, architect, tournament, ...)
+/vibe-reindex           — build or update the project knowledge base (.delegate/knowledge.md)
+/vibe-audit             — show background audit findings
+/vibe-audit scan        — trigger a new read-only audit scan
+/vibe-research          — show continuous research findings
+/vibe-research scan     — trigger a new deep web research pass
+/vibe-scheduler start   — start background audit/research/knowledge workers
+/vibe-scheduler stop    — stop all background workers
+/vibe-scheduler status  — show what is currently running
 ```
 
 ### Model selection
@@ -333,11 +367,19 @@ Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x24.0)
 Claude Code  /  Codex CLI
   └─ /vibe <instruction>  OR  /delegate <harness> <instruction>
        └─ SKILL.md / CODEX-SKILL.md logic
+            │
+            ├─ Background workers (scheduler):
+            │    ├─ delegate-audit    → read-only bug/smell scan, SOTA fixes valid findings
+            │    ├─ delegate-research → JINA web research (papers, CVEs, best practices)
+            │    └─ delegate-reindex  → updates .delegate/knowledge.md
+            │
             └─ ~/tools/delegate <harness> <workdir> <prompt> [turns] [agent] [timeout]
                  ├─ delegate-rollback: git branch checkpoint (pre-run)
                  ├─ delegate-distill: inject .delegate/project-brief.md
+                 ├─ delegate-reindex: inject .delegate/knowledge.md
                  ├─ delegate-contracts: run pre-conditions
                  │
+                 ├─ tools/adapters/codex    → codex exec --json -p <profile>  (default)
                  ├─ tools/adapters/vibe     → script pseudo-TTY + vibe --output streaming
                  ├─ tools/adapters/pi       → pi --mode json -p "prompt"
                  └─ tools/adapters/opencode → opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"
@@ -357,8 +399,8 @@ Claude Code  /  Codex CLI
 
 | Role | Tools |
 |------|-------|
-| Orchestrators (review, route, write prompts) | Claude Code, Codex CLI |
-| Delegate harnesses (write code cheaply) | Vibe (Mistral), Pi, OpenCode |
+| Orchestrators (review, route, write prompts, SOTA planning) | Claude Code, Codex CLI |
+| Delegate harnesses (write code cheaply) | Codex (default, via profiles), Vibe (Mistral), Pi, OpenCode |
 
 ---
 
@@ -373,6 +415,7 @@ All tools live in `~/tools/` (symlinked from the repo's `tools/` directory).
 | `adapters/vibe` | Vibe harness adapter (pseudo-TTY, JSON stream parser, token extraction) |
 | `adapters/pi` | Pi harness adapter: `pi --mode json -p "prompt"` |
 | `adapters/opencode` | OpenCode adapter: `opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"` |
+| `adapters/codex` | Codex CLI adapter: `codex exec --json -p <profile>` — used by all chains by default |
 | `delegate-rollback` | Git branch checkpoints: auto-created before each run, auto-cleaned on success, preserved on failure |
 | `delegate-reject` | Write a correction prompt for the reject-correct loop |
 | `delegate-correct` | Send a correction directly to the harness |
@@ -389,6 +432,10 @@ All tools live in `~/tools/` (symlinked from the repo's `tools/` directory).
 | `delegate-replay` | Step-by-step replay of recorded sessions for debugging |
 | `delegate-dashboard` | Live TUI dashboard (requires `rich`; falls back to plain text) |
 | `delegate-report` | Historical token/cost/failure report across all runs |
+| `delegate-reindex` | Build/update `.delegate/knowledge.md` (the project knowledge base) |
+| `delegate-audit` | Background read-only audit agent — finds bugs/smells, SOTA fixes valid ones |
+| `delegate-research` | Deep web research via JINA — papers, CVEs, best practices, alternatives |
+| `delegate-scheduler` | Background scheduler for continuous audit, research, and knowledge updates |
 
 ---
 
@@ -396,10 +443,11 @@ All tools live in `~/tools/` (symlinked from the repo's `tools/` directory).
 
 ### Multi-harness support
 
-Three delegate harnesses, same post-run pipeline:
+Four delegate harnesses, same post-run pipeline:
 
 | Harness | Status | Invocation |
 |---------|--------|-----------|
+| `codex` | Active (default) | `codex exec --json -p <profile>` — used by all pre-built chains |
 | `vibe` | Active | Mistral Vibe CLI via pseudo-TTY, `--output streaming` |
 | `pi` | Stub | `pi --mode json -p "prompt"` |
 | `opencode` | Stub | `opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"` |
@@ -450,17 +498,70 @@ Max 2 correction rounds before escalating. All code generation stays on cheap de
 
 `delegate-chain` runs multi-step workflows defined in `.delegate/chains/*.yaml`. Pre-built chains below. Each step passes its output to the next; chains abort on failure and roll back.
 
+| Command | Description |
+|---------|-------------|
+| `/vibe-mode steady` | SOTA plans → MiniMax implements → GLM validates |
+| `/vibe-mode quick` | MiniMax implements → GLM reviews (no planning step) |
+| `/vibe-mode fix` | SOTA investigates → MiniMax fixes → GLM validates |
+| `/vibe-mode race` | Two models compete, best result wins |
+| `/vibe-mode fortress` | SOTA plans → implement → test → security scan |
+| `/vibe-mode ironclad` | Fortress + final review pass |
+| `/vibe-mode architect` | SOTA plans → implement → validate (planning explicit) |
+| `/vibe-mode tournament` | 4 workers race simultaneously, GLM judges the winner |
+| `/vibe-mode simple` | Direct delegation, no chain |
+
+All chains with planning steps use `sota: true` — the orchestrator writes the plan, cheap models execute. All chains use `harness: codex` with profiles `minimax` (MiniMax-M2.7) and `glm` (glm-5.1).
+
+Codex equivalents: `$vibe-mode steady`, `$vibe-mode quick`, etc.
+
+### SOTA planning
+
+Every chain that includes a planning step sets `sota: true` in the chain YAML. This means the orchestrator (Claude or Codex) writes the plan — not the cheap model. The plan is saved to `.delegate/plan.md` before execution begins, giving every subsequent step a shared reference document.
+
+Affected chains: `steady`, `fix`, `fortress`, `ironclad`, `architect`. Use `/vibe-mode architect` when you want to make the planning role explicit.
+
+### Knowledge base
+
+`/vibe-reindex` builds or updates `.delegate/knowledge.md`, a living document with four sections:
+
+- **Architecture** — how the codebase is structured
+- **Patterns** — idioms and conventions in use
+- **Data Flow** — how data moves through the system
+- **Gotchas** — known sharp edges and non-obvious constraints
+
+SOTA writes the initial version. Cheap models keep it updated on subsequent runs. The file is auto-injected into every delegation prompt alongside the project brief.
+
+### Background audit
+
+`/vibe-audit scan` dispatches a read-only agent that walks the codebase file by file, looking for bugs, code smells, and potential issues. It never writes changes. SOTA then reviews the raw findings and fixes the ones it confirms as valid.
+
+`/vibe-audit` displays the current findings without triggering a new scan.
+
+### Continuous research
+
+`/vibe-research scan` triggers a deep web research pass via JINA. It searches for:
+- ArXiv papers relevant to your stack or domain
+- CVEs and security advisories for your dependencies
+- Best practices and updated idioms
+- Newer alternatives to libraries or patterns in use
+
+`/vibe-research` shows the accumulated findings from past scans.
+
+### Scheduler
+
+`/vibe-scheduler start` runs audit, research, and knowledge-base updates continuously in the background. Configuration lives in `.delegate/scheduler.yaml` (scan intervals, enabled tasks, etc.).
+
 ```
-/vibe-mode steady     — think first, then build, then check
-/vibe-mode quick      — build it, get a second opinion
-/vibe-mode fix        — investigate, fix, validate
-/vibe-mode race       — two models compete, pick the winner
-/vibe-mode fortress   — the full gauntlet
-/vibe-mode ironclad   — fortress + final validation pass
-/vibe-mode simple     — just send it
+/vibe-scheduler start   — start background workers
+/vibe-scheduler stop    — stop all background workers
+/vibe-scheduler status  — show what is currently running
 ```
 
-Codex equivalents: `$vibe-mode steady`, `$vibe-mode quick`, etc. All chains use `harness: codex` with profiles `minimax` (MiniMax-M2.7) and `glm` (glm-5.1).
+### Parallel workers (tournament mode)
+
+`/vibe-mode tournament` dispatches four model workers simultaneously. Each attempts the same task independently. GLM acts as judge, selecting the best result based on correctness, coverage, and style.
+
+Tournament mode is also available as a building block: any chain step can include a `parallel:` block in its YAML definition to run multiple workers for that step.
 
 ### Session replay
 

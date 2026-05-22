@@ -1,33 +1,31 @@
 name: ironclad
-description: Fortress + final validation pass — plan, implement, test, security, then full review
+description: SOTA plans, MiniMax implements, GLM tests, MiniMax security, GLM final review
 
 steps:
   - role: planner
-    harness: codex
-    model: glm/glm-5.1
-    turns: 0
-    prompt_template: "Analyze the codebase and plan how to: {task}\n\nList the files to modify, the approach, and any risks. Do NOT write code yet."
+    sota: true
+    prompt_template: "Analyze the codebase and create a comprehensive plan for: {task}\n\nInclude: files to modify, approach, risks, security considerations, test strategy."
 
   - role: implementor
     harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
-    prompt_template: "Implement the following based on the plan above.\n\nTASK: {task}\n\nWrite the code. Follow existing conventions. Add imports."
+    prompt_template: "Follow this plan EXACTLY.\n\nPLAN:\n{plan}\n\nTASK: {task}\n\nWrite the code. Follow existing conventions. Add imports."
 
   - role: test-writer
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "Write tests for the changes just made for: {task}\n\nUse the project's existing test framework. Cover the happy path and one edge case."
+    prompt_template: "Write tests for the changes just made.\n\nPLAN:\n{plan}\n\nTASK: {task}\n\nUse the project's existing test framework. Cover the happy path and one edge case."
 
   - role: security-reviewer
     harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
-    prompt_template: "Security review the recent changes for: {task}\n\nCheck for: injection, auth bypass, data leaks, unsafe deserialization, path traversal. Report issues or say CLEAR."
+    prompt_template: "Security review the recent changes.\n\nPLAN:\n{plan}\n\nTASK: {task}\n\nCheck for: injection, auth bypass, data leaks, unsafe deserialization, path traversal. Report issues or say CLEAR."
 
   - role: final-reviewer
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "Final review of ALL changes made for: {task}\n\nCheck the full git diff. Verify:\n- Implementation matches the original plan\n- Tests cover the right cases\n- Security issues were addressed\n- No regressions, no dead code, no missing imports\n- Code is clean and follows project conventions\n\nReport any remaining issues or say APPROVED."
+    prompt_template: "Final review of ALL changes.\n\nORIGINAL PLAN:\n{plan}\n\nTASK: {task}\n\nVerify:\n- Implementation matches the plan\n- Tests cover the right cases\n- Security issues were addressed\n- No regressions, no dead code, no missing imports\n\nReport any remaining issues or say APPROVED."

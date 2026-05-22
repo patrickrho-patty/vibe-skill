@@ -1,21 +1,19 @@
 name: steady
-description: Plan, implement, validate — all via Codex
+description: SOTA plans, MiniMax implements, GLM validates
 
 steps:
   - role: planner
-    harness: codex
-    model: glm/glm-5.1
-    turns: 0
-    prompt_template: "Analyze the codebase and create an implementation plan for: {task}\n\nList files to modify, approach, and risks. Do NOT write code."
+    sota: true
+    prompt_template: "Analyze the codebase and create a detailed implementation plan for: {task}\n\nList files to modify, approach, risks, and step-by-step instructions."
 
   - role: implementor
     harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
-    prompt_template: "Based on the plan, implement: {task}\n\nFollow existing conventions. Add all necessary imports."
+    prompt_template: "Follow this plan EXACTLY.\n\nPLAN:\n{plan}\n\nTASK: {task}\n\nFollow existing conventions. Add all necessary imports."
 
   - role: validator
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "Review the changes made for: {task}. Check for bugs, missing imports, duplicate code. Report issues or say LGTM."
+    prompt_template: "Review the changes against this plan.\n\nPLAN:\n{plan}\n\nTASK: {task}\n\nCheck for bugs, missing imports, duplicate code. Report deviations or say LGTM."

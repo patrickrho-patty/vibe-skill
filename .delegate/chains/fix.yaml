@@ -1,21 +1,19 @@
 name: fix
-description: Investigate, fix, validate — all via Codex
+description: SOTA investigates, MiniMax fixes, GLM validates
 
 steps:
   - role: investigator
-    harness: codex
-    model: glm/glm-5.1
-    turns: 0
-    prompt_template: "Investigate the following bug. Read relevant files, identify the root cause, and explain what needs to change.\n\nBUG: {task}"
+    sota: true
+    prompt_template: "Investigate this bug. Read relevant files, identify the root cause, and write a fix plan with exact file/line changes needed.\n\nBUG: {task}"
 
   - role: fixer
     harness: codex
     model: minimax/MiniMax-M2.7
     turns: 0
-    prompt_template: "Fix the following bug based on the investigation above.\n\nBUG: {task}\n\nApply the minimal fix. Do not refactor unrelated code."
+    prompt_template: "Apply this fix plan EXACTLY.\n\nFIX PLAN:\n{plan}\n\nBUG: {task}\n\nApply the minimal fix. Do not refactor unrelated code."
 
   - role: validator
     harness: codex
     model: glm/glm-5.1
     turns: 0
-    prompt_template: "Review the fix for: {task}. Verify the root cause was addressed, no regressions were introduced, and imports are correct. Report issues or say LGTM."
+    prompt_template: "Review the fix against this plan.\n\nFIX PLAN:\n{plan}\n\nBUG: {task}\n\nVerify the root cause was addressed and no regressions introduced. Report issues or say LGTM."
