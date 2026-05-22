@@ -193,7 +193,8 @@ def plain_watch(workdir: str, session_file: str):
             last_size = current_size
             state = parse_session(current_session, workdir)
             os.system('clear')
-            print(f"=== DELEGATION LIVE ({datetime.now().strftime('%H:%M:%S')}) ===")
+            project = os.path.basename(os.path.abspath(workdir))
+            print(f"=== {project} — DELEGATION LIVE ({datetime.now().strftime('%H:%M:%S')}) ===")
             print(f"Session: {os.path.basename(current_session)}")
             print(f"Model  : {state['model']}")
             print(f"Events : {state['events']}  Tools: {state['tool_calls']}  Warns: {state['warns']}")
@@ -232,7 +233,8 @@ def rich_watch(workdir: str, session_file: str):
         # Show session filename as step indicator
         sf_name = os.path.basename(sf)
 
-        header = f"[bold]Model:[/] {state['model']}  [bold]Events:[/] {state['events']}  [bold]Tools:[/] {state['tool_calls']}  [bold]Warns:[/] {state['warns']}  [dim]Session: {sf_name}[/dim]"
+        project = os.path.basename(os.path.abspath(workdir))
+        header = f"[bold cyan]{project}[/]  [bold]Model:[/] {state['model']}  [bold]Events:[/] {state['events']}  [bold]Tools:[/] {state['tool_calls']}  [bold]Warns:[/] {state['warns']}  [dim]{sf_name}[/dim]"
         files_str = ', '.join(state['files_touched']) or '(none yet)'
 
         activity_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
