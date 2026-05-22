@@ -33,10 +33,25 @@ def find_latest_session(workdir: str) -> str:
     return str(files[0]) if files else ''
 
 
-def read_model_flag(workdir: str) -> str:
+def read_model(workdir: str) -> str:
+    # Try flag file first
     flag = Path(workdir) / '.delegate' / 'model.flag'
     if flag.exists():
-        return flag.read_text().strip()
+        val = flag.read_text().strip()
+        if val:
+            return val
+    # Fall back to last run's model in runs.jsonl
+    runs = Path(workdir) / '.delegate' / 'runs.jsonl'
+    if runs.exists():
+        try:
+            lines = runs.read_text().strip().splitlines()
+            if lines:
+                last = json.loads(lines[-1])
+                m = last.get('model', '')
+                if m and m != 'codex-unknown':
+                    return m
+        except Exception:
+            pass
     return ''
 
 
@@ -44,7 +59,7 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
     events = []
     tool_calls = 0
     warns = 0
-    model = read_model_flag(workdir) if workdir else 'unknown'
+    model = read_model(workdir) if workdir else 'unknown'
     last_text = ''
     files_touched = set()
     reads = []
