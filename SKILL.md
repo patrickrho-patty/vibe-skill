@@ -68,14 +68,15 @@ COMMANDS
   /vibe-research [scan] [--model <m>]    Research findings (default: GLM)
   /vibe-scheduler start|stop|status      Manage background agents
 
-EXAMPLES
+EXAMPLES (modes support 2+ char prefix shortcuts)
   /vibe add a login page
-  /vibe steady: refactor the auth module
-  /vibe fix: the email validation is broken
-  /vibe docs: write API documentation
-  /vibe tournament: implement search
-  /vibe web: latest quantization techniques for LLMs
-  /vibe-mode ironclad
+  /vibe st: refactor the auth module          (steady)
+  /vibe fi: the email validation is broken    (fix)
+  /vibe do: write API documentation           (docs)
+  /vibe to: implement search                  (tournament)
+  /vibe we: latest quantization techniques    (web)
+  /vibe ir: add auth with full pipeline       (ironclad)
+  /vibe-mode ir                               (sets ironclad)
   /vibe-scheduler start
 ```
 
@@ -178,9 +179,32 @@ The user can specify the mode directly in the `/vibe` command:
 
 Format: `/vibe <mode>: <instruction>`
 
-When a colon is present after the first word, check if the word before the colon
-matches a chain file in `.claude/vibe-skill/.delegate/chains/`. If it does, use
-that mode for THIS delegation only (does not change the persistent mode flag).
+When a colon is present after the first word, take the word before the colon
+and match it against chain files in `.claude/vibe-skill/.delegate/chains/`.
+
+**Prefix matching (2+ characters):** The mode name can be abbreviated to its
+shortest unique prefix. Match logic:
+1. Try exact match first (`steady` → `steady.yaml`)
+2. If no exact match, try prefix match (`st` → `steady.yaml`)
+3. If prefix matches multiple chains, use the shortest chain name
+4. Minimum 2 characters required
+
+Examples:
+```
+/vibe st: fix the auth    → steady
+/vibe fi: broken import   → fix
+/vibe ir: add auth        → ironclad
+/vibe do: write API docs  → docs
+/vibe qu: add a button    → quick
+/vibe to: implement search → tournament
+/vibe we: latest LLM research → web
+/vibe fo: add JWT auth    → fortress
+/vibe ar: redesign DB     → architect
+/vibe ra: implement feature → race
+```
+
+If the mode is used for THIS delegation only (does not change the persistent
+mode flag). The same prefix matching applies to `/vibe-mode`.
 
 ### Persistent mode (sticky)
 
