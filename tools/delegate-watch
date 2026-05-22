@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-delegate-watch — live streaming log of delegation progress.
+delegate-watch — live TUI showing delegation progress with fixed header and scrollable log.
 
 Usage:
   delegate-watch [workdir]                    Watch the latest session
@@ -14,13 +14,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-try:
-    from rich.console import Console
-    from rich.text import Text
-    HAS_RICH = True
-except ImportError:
-    HAS_RICH = False
-
+# ── Event formatting ─────────────────────────────────────────────────────────
 
 def find_latest_session(workdir: str) -> str:
     session_dir = Path(workdir) / '.delegate' / 'sessions'
@@ -37,27 +31,33 @@ def read_active_model(workdir: str) -> str:
             return active.read_text().strip()
         except Exception:
             pass
-    return ''
+    runs = Path(workdir) / '.delegate' / 'runs.jsonl'
+    if runs.exists():
+        try:
+            lines = runs.read_text().strip().splitlines()
+            if lines:
+                last = json.loads(lines[-1])
+                m = last.get('model', '')
+                if m:
+                    return m
+        except Exception:
+            pass
+    return 'unknown'
 
 
-def format_event(item: dict, cmd: str = '') -> tuple:
-    """Returns (type, display_text) for an event item."""
+def format_event(item: dict) -> tuple:
     item_type = item.get('type', '')
 
     if item_type == 'reasoning':
         text = item.get('text', '').strip()
-        if text:
-            return ('thinking', text[:300])
-        return ('skip', '')
+        return ('thinking', text[:300]) if text else ('skip', '')
 
     if item_type in ('message', 'text', 'agent_message'):
         content = item.get('content', '') or item.get('text', '') or ''
         if isinstance(content, list):
             content = ' '.join(c.get('text', '') for c in content if isinstance(c, dict))
         text = str(content).strip()
-        if text:
-            return ('message', text[:500])
-        return ('skip', '')
+        return ('message', text[:500]) if text else ('skip', '')
 
     if item_type in ('tool_call', 'function_call', 'computer_call', 'command_execution'):
         name = item.get('name', '')
@@ -69,7 +69,6 @@ def format_event(item: dict, cmd: str = '') -> tuple:
         if command:
             inner = re.search(r"'(.+)'", command)
             display = inner.group(1) if inner else command
-            # Classify
             real_files = re.findall(r'[\w/.-]+\.(?:py|js|ts|tsx|jsx|go|rs|rb|sh|yaml|yml|json|md|toml)\b', display)
             if any(r in display for r in ['cat ', 'head ', 'tail ', 'sed -n']):
                 target = os.path.basename(real_files[0]) if real_files else display[:60]
@@ -98,166 +97,182 @@ def format_event(item: dict, cmd: str = '') -> tuple:
     if item_type == 'tool_call_output':
         output = str(item.get('output', ''))
         if 'error' in output.lower() or 'failed' in output.lower():
-            first_line = output.split('\n')[0][:120]
-            return ('error', f"ERROR: {first_line}")
+            return ('error', output.split('\n')[0][:120])
         return ('skip', '')
 
     return ('skip', '')
 
 
-def stream_rich(workdir: str, session_file: str):
-    from rich.panel import Panel
-    from rich.live import Live
-    from rich.layout import Layout
-    from rich.text import Text as RText
+# ── Textual TUI ──────────────────────────────────────────────────────────────
 
-    console = Console()
+def run_textual_app(workdir: str, session_file: str):
+    from textual.app import App, ComposeResult
+    from textual.widgets import Header, Footer, Static, RichLog
+    from textual.containers import VerticalScroll
+    from textual import work
+
     project = os.path.basename(os.path.abspath(workdir))
-    processed = [0]
-    current_session = [session_file]
-    tool_buffer = []
-    log_lines = []  # accumulated output lines (Text objects)
-    max_log = 200   # keep last N lines in memory
-    model = [read_active_model(workdir) or 'unknown']
-    events_count = [0]
-    tools_count = [0]
-    warns_count = [0]
 
-    def flush_tools():
-        if not tool_buffer:
-            return
-        if len(tool_buffer) <= 3:
-            for t in tool_buffer:
-                log_lines.append(Text(f"  {t}", style="dim"))
-        else:
-            for t in tool_buffer[:2]:
-                log_lines.append(Text(f"  {t}", style="dim"))
-            log_lines.append(Text(f"  ... +{len(tool_buffer) - 2} more tool calls", style="dim italic"))
-        tool_buffer.clear()
+    class DelegateWatch(App):
+        CSS = """
+        #status-bar {
+            dock: top;
+            height: 2;
+            background: $primary-background;
+            color: $text;
+            padding: 0 1;
+        }
+        #log {
+            height: 1fr;
+        }
+        """
+        BINDINGS = [("q", "quit", "Quit"), ("c", "clear_log", "Clear")]
 
-    def build_header():
-        now = datetime.now().strftime('%H:%M:%S')
-        sf_name = os.path.basename(current_session[0])
-        return Panel(
-            f"[bold]{project}[/]  Model: [cyan]{model[0]}[/]  "
-            f"Events: {events_count[0]}  Tools: {tools_count[0]}  Warns: {warns_count[0]}  "
-            f"[dim]{sf_name}[/]",
-            title=f"[bold]DELEGATION LIVE — {now}[/]",
-            border_style="cyan",
-        )
+        def __init__(self):
+            super().__init__()
+            self.session_file = session_file
+            self.processed = 0
+            self.events_count = 0
+            self.tools_count = 0
+            self.warns_count = 0
+            self.model = read_active_model(workdir) or 'unknown'
+            self.tool_buffer = []
 
-    def build_log():
-        from rich.console import Group
-        visible = log_lines[-40:]  # show last 40 lines
-        if not visible:
-            return Text("(waiting for events...)", style="dim")
-        return Group(*visible)
+        def compose(self) -> ComposeResult:
+            yield Static(self._header_text(), id="status-bar")
+            yield RichLog(highlight=True, markup=True, id="log")
+            yield Footer()
 
-    def build_layout():
-        layout = Layout()
-        layout.split_column(
-            Layout(build_header(), name="header", size=3),
-            Layout(build_log(), name="log"),
-        )
-        return layout
-
-    with Live(build_layout(), console=console, refresh_per_second=2, screen=True) as live:
-        try:
-            while True:
-                # Auto-follow new sessions
-                latest = find_latest_session(workdir)
-                if latest and latest != current_session[0]:
-                    flush_tools()
-                    current_session[0] = latest
-                    processed[0] = 0
-                    new_model = read_active_model(workdir)
-                    if new_model:
-                        model[0] = new_model
-                    log_lines.append(Text(""))
-                    log_lines.append(Text(f"━━━ Step changed ━━━ Model: {model[0]} ━━━", style="bold yellow"))
-                    log_lines.append(Text(""))
-
-                # Check model change
-                new_model = read_active_model(workdir)
-                if new_model and new_model != model[0]:
-                    model[0] = new_model
-
-                # Read new events
+        def _is_running(self) -> bool:
+            pid_file = Path(workdir) / '.delegate' / 'delegate.pid'
+            if pid_file.exists():
                 try:
-                    with open(current_session[0]) as f:
-                        lines = f.readlines()
-                except Exception:
-                    time.sleep(0.5)
-                    live.update(build_layout())
+                    pid = int(pid_file.read_text().strip())
+                    os.kill(pid, 0)
+                    return True
+                except (ValueError, ProcessLookupError):
+                    return False
+                except PermissionError:
+                    return True
+            return False
+
+        def _header_text(self) -> str:
+            sf = os.path.basename(self.session_file)
+            running = self._is_running()
+            status = "[bold green]● Running[/]" if running else "[dim]○ Idle[/]"
+            model_part = f"  Model: [cyan]{self.model}[/]" if running else ""
+            return (f"[bold]{project}[/]  {status}{model_part}  "
+                    f"Events: {self.events_count}  Tools: {self.tools_count}  "
+                    f"Warns: {self.warns_count}  [dim]{sf}[/]")
+
+        def on_mount(self) -> None:
+            self.set_interval(0.5, self.poll_events)
+
+        def _flush_tools(self):
+            log = self.query_one("#log", RichLog)
+            if not self.tool_buffer:
+                return
+            if len(self.tool_buffer) <= 3:
+                for t in self.tool_buffer:
+                    log.write(f"  [dim]{t}[/]")
+            else:
+                for t in self.tool_buffer[:2]:
+                    log.write(f"  [dim]{t}[/]")
+                log.write(f"  [dim italic]... +{len(self.tool_buffer) - 2} more tool calls[/]")
+            self.tool_buffer.clear()
+
+        def poll_events(self) -> None:
+            # Auto-follow latest session
+            latest = find_latest_session(workdir)
+            if latest and latest != self.session_file:
+                self._flush_tools()
+                self.session_file = latest
+                self.processed = 0
+                new_model = read_active_model(workdir)
+                if new_model:
+                    self.model = new_model
+                log = self.query_one("#log", RichLog)
+                log.write("")
+                log.write(f"[bold yellow]━━━ Step changed ━━━ Model: {self.model} ━━━[/]")
+                log.write("")
+
+            # Check model change
+            new_model = read_active_model(workdir)
+            if new_model and new_model != self.model:
+                self.model = new_model
+
+            # Read new events
+            try:
+                with open(self.session_file) as f:
+                    lines = f.readlines()
+            except Exception:
+                self.query_one("#status-bar", Static).update(self._header_text())
+                return
+
+            new_lines = lines[self.processed:]
+            if not new_lines:
+                self.query_one("#status-bar", Static).update(self._header_text())
+                return
+
+            log = self.query_one("#log", RichLog)
+
+            for line in new_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
                     continue
 
-                new_lines = lines[processed[0]:]
-                if not new_lines:
-                    time.sleep(0.5)
-                    live.update(build_layout())
+                self.events_count += 1
+                item = msg.get('item', {}) or {}
+                event_type = msg.get('type', '')
+
+                if event_type in ('thread.started', 'turn.started', 'turn.completed',
+                                  'item.started', 'exec.completed'):
                     continue
 
-                for line in new_lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        msg = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+                etype, etext = format_event(item)
 
-                    events_count[0] += 1
-                    item = msg.get('item', {}) or {}
-                    event_type = msg.get('type', '')
+                if etype == 'skip':
+                    continue
+                elif etype == 'message':
+                    self._flush_tools()
+                    log.write("")
+                    log.write(etext)
+                    log.write("")
+                elif etype == 'thinking':
+                    self._flush_tools()
+                    log.write(f"  [dim italic]💭 {etext}[/]")
+                elif etype in ('tool', 'read', 'write'):
+                    self.tools_count += 1
+                    self.tool_buffer.append(f"[{etype}] {etext}")
+                    if len(self.tool_buffer) >= 6:
+                        self._flush_tools()
+                elif etype == 'error':
+                    self._flush_tools()
+                    self.warns_count += 1
+                    log.write(f"  [bold red]⚠ {etext}[/]")
 
-                    if event_type in ('thread.started', 'turn.started', 'turn.completed',
-                                      'item.started', 'exec.completed'):
-                        continue
+            self._flush_tools()
+            self.processed = len(lines)
+            self.query_one("#status-bar", Static).update(self._header_text())
 
-                    etype, etext = format_event(item, item.get('command', ''))
+        def action_clear_log(self) -> None:
+            self.query_one("#log", RichLog).clear()
 
-                    if etype == 'skip':
-                        continue
+    DelegateWatch().run()
 
-                    if etype == 'message':
-                        flush_tools()
-                        log_lines.append(Text(""))
-                        log_lines.append(Text(etext, style="white"))
-                        log_lines.append(Text(""))
 
-                    elif etype == 'thinking':
-                        flush_tools()
-                        log_lines.append(Text(f"  💭 {etext}", style="dim italic"))
-
-                    elif etype in ('tool', 'read', 'write'):
-                        tools_count[0] += 1
-                        tool_buffer.append(f"[{etype}] {etext}")
-                        if len(tool_buffer) >= 6:
-                            flush_tools()
-
-                    elif etype == 'error':
-                        flush_tools()
-                        warns_count[0] += 1
-                        log_lines.append(Text(f"  ⚠ {etext}", style="bold red"))
-
-                # Trim log
-                if len(log_lines) > max_log:
-                    del log_lines[:len(log_lines) - max_log]
-
-                processed[0] = len(lines)
-                flush_tools()
-                live.update(build_layout())
-                time.sleep(0.5)
-
-        except KeyboardInterrupt:
-            pass
-
+# ── Plain text fallback ──────────────────────────────────────────────────────
 
 def stream_plain(workdir: str, session_file: str):
     project = os.path.basename(os.path.abspath(workdir))
     processed = 0
     current_session = session_file
     tool_buffer = []
+    lines_since_header = 0
 
     def flush_tools():
         nonlocal tool_buffer
@@ -272,9 +287,14 @@ def stream_plain(workdir: str, session_file: str):
             print(f"  ... +{len(tool_buffer) - 2} more tool calls")
         tool_buffer.clear()
 
-    model = read_active_model(workdir) or 'unknown'
-    print(f"=== {project} === Model: {model} ===")
-    print(f"Session: {os.path.basename(session_file)}\n")
+    def print_header():
+        nonlocal lines_since_header
+        model = read_active_model(workdir) or 'unknown'
+        sf = os.path.basename(current_session)
+        print(f"\n━━━ {project} ━━━ Model: {model} ━━━ {sf} ━━━")
+        lines_since_header = 0
+
+    print_header()
 
     try:
         while True:
@@ -283,9 +303,8 @@ def stream_plain(workdir: str, session_file: str):
                 flush_tools()
                 current_session = latest
                 processed = 0
-                model = read_active_model(workdir) or model
-                print(f"\n=== Step changed === Model: {model} ===")
-                print(f"Session: {os.path.basename(current_session)}\n")
+                print(f"\n━━━ Step changed ━━━")
+                print_header()
 
             try:
                 with open(current_session) as f:
@@ -310,29 +329,34 @@ def stream_plain(workdir: str, session_file: str):
 
                 item = msg.get('item', {}) or {}
                 event_type = msg.get('type', '')
-
                 if event_type in ('thread.started', 'turn.started', 'turn.completed',
                                   'item.started', 'exec.completed'):
                     continue
 
-                etype, text = format_event(item)
-
+                etype, etext = format_event(item)
                 if etype == 'skip':
                     continue
                 elif etype == 'message':
                     flush_tools()
-                    print(f"\n{text}\n")
+                    print(f"\n{etext}\n")
+                    lines_since_header += 3
                 elif etype == 'thinking':
                     flush_tools()
-                    print(f"  [thinking] {text}")
+                    print(f"  [thinking] {etext}")
+                    lines_since_header += 1
                 elif etype in ('tool', 'read', 'write'):
-                    tool_buffer.append(f"[{etype}] {text}")
+                    tool_buffer.append(f"[{etype}] {etext}")
                     if len(tool_buffer) >= 6:
                         flush_tools()
                 elif etype == 'error':
                     flush_tools()
-                    print(f"  ERROR: {text}")
+                    print(f"  ERROR: {etext}")
+                    lines_since_header += 1
 
+                if lines_since_header >= 25:
+                    print_header()
+
+            flush_tools()
             processed = len(lines)
             time.sleep(0.5)
 
@@ -340,6 +364,8 @@ def stream_plain(workdir: str, session_file: str):
         flush_tools()
         print("\nStopped.")
 
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     args = sys.argv[1:]
@@ -362,10 +388,15 @@ def main():
         print("Run a delegation first, then watch it.", file=sys.stderr)
         sys.exit(1)
 
-    if HAS_RICH:
-        stream_rich(workdir, session_file)
-    else:
-        stream_plain(workdir, session_file)
+    try:
+        import textual
+        run_textual_app(workdir, session_file)
+    except ImportError:
+        try:
+            from rich.console import Console
+            stream_plain(workdir, session_file)
+        except ImportError:
+            stream_plain(workdir, session_file)
 
 
 if __name__ == '__main__':
