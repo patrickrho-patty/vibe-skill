@@ -34,13 +34,16 @@ def find_latest_session(workdir: str) -> str:
 
 
 def read_model(workdir: str) -> str:
-    # Try flag file first
-    flag = Path(workdir) / '.delegate' / 'model.flag'
-    if flag.exists():
-        val = flag.read_text().strip()
-        if val:
-            return val
-    # Fall back to last run's model in runs.jsonl
+    # 1. Active model file (written by delegate at start of each run — always current)
+    active = Path(workdir) / '.delegate' / 'active-model'
+    if active.exists():
+        try:
+            val = active.read_text().strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    # 2. Fall back to last run's model in runs.jsonl
     runs = Path(workdir) / '.delegate' / 'runs.jsonl'
     if runs.exists():
         try:

@@ -65,6 +65,10 @@ fi
 
 cd "$WORKDIR"
 
+# Write active model + harness for live monitoring (delegate-watch reads this)
+mkdir -p "$WORKDIR/.delegate"
+echo "${DELEGATE_MODEL_OVERRIDE:-${HARNESS}}" > "$WORKDIR/.delegate/active-model"
+
 # Prevent duplicate delegations on the same workdir
 DELEGATE_PID_FILE="$WORKDIR/.delegate/delegate.pid"
 mkdir -p "$WORKDIR/.delegate"
