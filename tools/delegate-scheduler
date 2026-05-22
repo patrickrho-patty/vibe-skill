@@ -406,6 +406,72 @@ def cmd_config(workdir: Path) -> None:
     print(config_file.read_text(), end='')
 
 
+def cmd_ps(workdir: Path) -> None:
+    """Show all delegate-related processes for this project."""
+    delegate_dir = workdir / '.delegate'
+    pid_files = {
+        'scheduler': delegate_dir / 'scheduler.pid',
+        'delegate': delegate_dir / 'delegate.pid',
+        'audit': delegate_dir / 'audit.pid',
+        'research': delegate_dir / 'research.pid',
+    }
+    project = workdir.name
+    print(f"Project: {project} ({workdir})\n")
+    print(f"{'Process':<16} {'PID':>8} {'Status':<10} {'PID File'}")
+    print(f"{'-'*16} {'-'*8} {'-'*10} {'-'*30}")
+
+    any_running = False
+    for name, pf in pid_files.items():
+        if pf.exists():
+            try:
+                pid = int(pf.read_text().strip())
+                alive = pid_alive(pid)
+                status = 'running' if alive else 'stale'
+                if alive:
+                    any_running = True
+                print(f"{name:<16} {pid:>8} {status:<10} {pf}")
+            except (ValueError, OSError):
+                print(f"{name:<16} {'?':>8} {'corrupt':<10} {pf}")
+        else:
+            print(f"{name:<16} {'-':>8} {'-':<10} (no pid file)")
+
+    if not any_running:
+        print(f"\nNo active processes for {project}.")
+
+
+def cmd_kill_all(workdir: Path) -> None:
+    """Kill all delegate-related processes for this project."""
+    delegate_dir = workdir / '.delegate'
+    pid_files = list(delegate_dir.glob('*.pid'))
+    project = workdir.name
+
+    if not pid_files:
+        print(f"No PID files found for {project}.")
+        return
+
+    killed = 0
+    for pf in pid_files:
+        try:
+            pid = int(pf.read_text().strip())
+            if pid_alive(pid):
+                os.kill(pid, signal.SIGTERM)
+                print(f"Killed {pf.stem} (PID {pid})")
+                killed += 1
+                # Wait briefly for clean exit
+                for _ in range(10):
+                    if not pid_alive(pid):
+                        break
+                    time.sleep(0.5)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+                    print(f"  Force-killed {pf.stem} (PID {pid})")
+            pf.unlink(missing_ok=True)
+        except (ValueError, OSError) as e:
+            pf.unlink(missing_ok=True)
+
+    print(f"\n{killed} process(es) killed for {project}. All PID files cleaned.")
+
+
 def cmd_run(workdir: Path, job_names: list) -> None:
     """Run specific jobs once (no daemon, no scheduling)."""
     config_file = workdir / '.delegate' / 'scheduler.yaml'
@@ -460,12 +526,16 @@ def main() -> None:
         print("  status <workdir>                     Show job status")
         print("  config <workdir>                     Show scheduler config")
         print("  run <workdir> <job1> [job2] [job3]   Run specific jobs once")
+        print("  ps <workdir>                         Show all processes for this project")
+        print("  kill-all <workdir>                   Kill all delegate processes for this project")
         print("\nJobs: audit, research, knowledge_update")
         print("\nExamples:")
         print("  delegate-scheduler start .                      # all jobs")
         print("  delegate-scheduler start . --only audit,research")
         print("  delegate-scheduler run . audit                  # one-shot audit")
         print("  delegate-scheduler run . audit research         # one-shot both")
+        print("  delegate-scheduler ps .                         # what's running?")
+        print("  delegate-scheduler kill-all .                   # stop everything")
         sys.exit(1)
 
     subcommand = sys.argv[1]
@@ -492,12 +562,14 @@ def main() -> None:
         'stop': cmd_stop,
         'status': cmd_status,
         'config': cmd_config,
+        'ps': cmd_ps,
+        'kill-all': cmd_kill_all,
     }
 
     fn = dispatch.get(subcommand)
     if fn is None:
         print(f"Unknown subcommand: {subcommand}")
-        print(f"Valid: start, stop, status, config, run")
+        print(f"Valid: start, stop, status, config, run, ps, kill-all")
         sys.exit(1)
 
     fn(workdir)
