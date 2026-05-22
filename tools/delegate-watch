@@ -60,7 +60,7 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
     tool_calls = 0
     warns = 0
     model = read_model(workdir) if workdir else 'unknown'
-    last_text = ''
+    messages = []
     files_touched = set()
     reads = []
     edits = []
@@ -147,12 +147,12 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
                     if isinstance(content, list):
                         content = ' '.join(c.get('text', '') for c in content if isinstance(c, dict))
                     if str(content).strip():
-                        last_text = str(content).strip()
+                        messages.append(str(content).strip()[:200])
 
                 elif item_type == 'reasoning':
                     text = item.get('text', '')
                     if text:
-                        last_text = f"[thinking] {text.strip()[:200]}"
+                        messages.append(f"[thinking] {text.strip()[:200]}")
 
     except Exception:
         pass
@@ -162,7 +162,7 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
         'tool_calls': tool_calls,
         'warns': warns,
         'model': model,
-        'last_text': last_text,
+        'messages': messages[-3:],
         'files_touched': files_touched,
         'reads': reads[-10:],
         'edits': edits[-10:],
@@ -193,9 +193,10 @@ def plain_watch(workdir: str, session_file: str):
             print(f"\n--- Activity ---")
             for line in state['activity']:
                 print(f"  {line}")
-            if state['last_text']:
-                print(f"\n--- Last message ---")
-                print(f"  {state['last_text'][:300]}")
+            if state['messages']:
+                print(f"\n--- Recent messages ---")
+                for msg in state['messages']:
+                    print(f"  {msg}")
             print(f"\n(watching... Ctrl+C to stop)")
 
         time.sleep(1)
@@ -230,13 +231,14 @@ def rich_watch(workdir: str, session_file: str):
                 style = "red"
             activity_table.add_row(Text(line, style=style))
 
-        msg_text = state['last_text'][:300] if state['last_text'] else '(waiting...)'
+        msg_lines = state['messages'] if state['messages'] else ['(waiting...)']
+        msg_text = '\n'.join(f'  {m}' for m in msg_lines)
 
         output = []
         output.append(Panel(header, title=f"DELEGATION LIVE — {now}", border_style="cyan"))
         output.append(f"[bold]Files:[/] {files_str}\n")
         output.append(activity_table)
-        output.append(f"\n[bold]Last message:[/] {msg_text}")
+        output.append(f"\n[bold]Recent messages:[/]\n{msg_text}")
 
         console.clear()
         for item in output:
