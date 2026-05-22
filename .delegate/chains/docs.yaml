@@ -1,0 +1,19 @@
+name: docs
+description: SOTA outlines what to document, cheap model writes it, SOTA reviews
+
+steps:
+  - role: planner
+    sota: true
+    prompt_template: "Write a brief documentation outline for: {task}\n\nSpecify: what sections to write, what to cover in each, what tone/audience, and which files to create or update. Keep this outline SHORT — bullet points only, no full sentences. The actual writing will be done by a separate agent."
+
+  - role: writer
+    harness: codex
+    model: minimax/MiniMax-M2.7
+    turns: 0
+    prompt_template: "Write the documentation following this outline EXACTLY.\n\nOUTLINE:\n{plan}\n\nTASK: {task}\n\nWrite complete, polished documentation. Use clear language. Include code examples where appropriate. Do not deviate from the outline."
+
+  - role: reviewer
+    harness: codex
+    model: glm/glm-5.1
+    turns: 0
+    prompt_template: "Review the documentation written for: {task}\n\nCheck against the outline:\n{plan}\n\nVerify: completeness (all outline items covered), accuracy (code examples correct), clarity (readable by the target audience), formatting (consistent markdown). Fix any gaps or errors directly."

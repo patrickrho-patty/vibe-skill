@@ -96,17 +96,42 @@ a task, or pick manually. Default is `vibe` until routing data accumulates.
 
 ---
 
-When the user invokes `/vibe <instruction>` or `/delegate <harness> <instruction>`,
-the orchestrator first checks for an active mode:
+When the user invokes `/vibe <instruction>`, the orchestrator determines the mode:
 
-1. Run: `cat .delegate/mode.flag 2>/dev/null`
-2. If a mode is set:
-   - Look for `.claude/vibe-skill/.delegate/chains/<mode>.yaml`
-   - If found: run `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" "<chain-yaml>"`
-     with env `DELEGATE_CHAIN_TASK="<user's instruction>"`
-   - If not found: warn "Mode '<mode>' has no matching chain file" and fall back
-     to simple delegation
-3. If no mode is set (simple mode): delegate directly as a single call
+### Inline mode (one command)
+
+The user can specify the mode directly in the `/vibe` command:
+
+```
+/vibe steady: add user authentication
+/vibe fix: the login form is broken
+/vibe docs: write API documentation for the routes
+/vibe tournament: implement the search feature
+/vibe architect: redesign the database schema
+```
+
+Format: `/vibe <mode>: <instruction>`
+
+When a colon is present after the first word, check if the word before the colon
+matches a chain file in `.claude/vibe-skill/.delegate/chains/`. If it does, use
+that mode for THIS delegation only (does not change the persistent mode flag).
+
+### Persistent mode (sticky)
+
+```
+/vibe-mode steady
+/vibe add auth          ← uses steady until changed
+/vibe fix the bug       ← still uses steady
+```
+
+### Mode resolution order
+
+1. **Inline mode** — `/vibe steady: add auth` → use `steady` for this one task
+2. **Persistent mode** — `cat .delegate/mode.flag` → use if set
+3. **Simple mode** — no chain, direct delegation
+
+For any mode, look for `.claude/vibe-skill/.delegate/chains/<mode>.yaml`.
+If not found, warn and fall back to simple delegation.
 
 Available modes are auto-discovered from `.claude/vibe-skill/.delegate/chains/*.yaml`.
 The mode name is the filename without `.yaml`. Use `/vibe-mode` to list them.
