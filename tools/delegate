@@ -143,8 +143,18 @@ while [ "$CORRECTION_ROUNDS" -lt "$MAX_CORRECTIONS" ] && [ -f "$CORRECTION_FILE"
   echo "=== CORRECTION ROUND $CORRECTION_ROUNDS/$MAX_CORRECTIONS ==="
   echo "Correction: ${CORRECTION_PROMPT:0:120}..."
 
-  # Write correction to prompt file and re-run adapter with fewer turns
+  # Write correction to prompt file with context re-injection
   printf '%s' "$CORRECTION_PROMPT" > "$PROMPT_FILE"
+  if [ -f "$KNOWLEDGE_FILE" ] || [ -f "$BRIEF_FILE" ]; then
+    CONTEXT_FILE=$(mktemp /tmp/delegate-context-XXXXXX.txt)
+    {
+      [ -f "$KNOWLEDGE_FILE" ] && echo "--- CODEBASE KNOWLEDGE ---" && cat "$KNOWLEDGE_FILE" && echo ""
+      [ -f "$BRIEF_FILE" ] && echo "--- PROJECT BRIEF ---" && cat "$BRIEF_FILE" && echo ""
+      echo "--- CORRECTION ---"
+      cat "$PROMPT_FILE"
+    } > "$CONTEXT_FILE"
+    mv "$CONTEXT_FILE" "$PROMPT_FILE"
+  fi
   "$ADAPTER_DIR/$HARNESS" "$WORKDIR" "$PROMPT_FILE" "3" "$AGENT" "$TIMEOUT_SECS" "$DELEGATE_STATS_FILE"
   ADAPTER_EXIT=$?
 

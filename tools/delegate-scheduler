@@ -120,7 +120,9 @@ def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except OSError:
+    except PermissionError:
+        return True  # process exists but owned by different user
+    except ProcessLookupError:
         return False
 
 
@@ -174,6 +176,10 @@ def launch_job(job_name: str, job_config: dict, workdir: Path, state: dict) -> N
     model = job_config.get('model')
     if model:
         env['DELEGATE_MODEL'] = model
+        env['DELEGATE_AUDIT_MODEL'] = model
+        env['DELEGATE_RESEARCH_MODEL'] = model
+        env['DELEGATE_KNOWLEDGE_MODEL'] = model
+        env['DELEGATE_ACTIVE_MODEL'] = model
 
     try:
         proc = subprocess.Popen(

@@ -300,8 +300,16 @@ def run_parallel_step(step, workdir, task, harness, step_index, total_steps, git
 
     atexit.register(cleanup_worktrees)
 
+    def _signal_cleanup(signum, frame):
+        cleanup_worktrees()
+        sys.exit(1)
+    prev_term = signal.signal(signal.SIGTERM, _signal_cleanup)
+    prev_int = signal.signal(signal.SIGINT, _signal_cleanup)
+
     for i, worker in enumerate(workers):
-        branch = f'delegate-race-{role}-{i}-{pid}-{ts}'
+        # Sanitize role for branch name (replace non-alphanumeric with dash)
+        safe_role = re.sub(r'[^a-zA-Z0-9_-]', '-', role)
+        branch = f'delegate-race-{safe_role}-{i}-{pid}-{ts}'
         wt_path = os.path.join(worktree_base, f'worker-{i}')
         result = subprocess.run(
             ['git', 'worktree', 'add', '-b', branch, wt_path, 'HEAD'],
@@ -329,6 +337,9 @@ def run_parallel_step(step, workdir, task, harness, step_index, total_steps, git
             env['VIBE_ACTIVE_MODEL'] = w_model
             env['PI_MODEL'] = w_model
             env['CODEX_MODEL'] = w_model
+
+        # Point logs to the real project, not the throwaway worktree
+        env['DELEGATE_WORKDIR'] = workdir
 
         turns = step.get('turns', 0)
         cmd = [delegate_path, w_harness, wt_path, prompt]
@@ -465,9 +476,17 @@ def run_parallel_step(step, workdir, task, harness, step_index, total_steps, git
                 except json.JSONDecodeError:
                     continue
 
-        # Parse winner
-        winner_match = re.search(r'WINNER:\s*(\d+)', judge_text)
-        reject_match = re.search(r'REJECT_ALL', judge_text)
+        # Parse winner — only look at the LAST line containing WINNER/REJECT
+        # to avoid being tricked by echoed diff content
+        winner_match = None
+        reject_match = None
+        for jline in reversed(judge_text.splitlines()):
+            if not winner_match:
+                winner_match = re.search(r'WINNER:\s*(\d+)', jline)
+            if not reject_match:
+                reject_match = re.search(r'REJECT_ALL', jline)
+            if winner_match or reject_match:
+                break
 
         if reject_match and not winner_match:
             print(f'\n  Judge: REJECT_ALL')
@@ -525,6 +544,8 @@ def run_parallel_step(step, workdir, task, harness, step_index, total_steps, git
     # Phase 7: Cleanup
     cleanup_worktrees()
     atexit.unregister(cleanup_worktrees)
+    signal.signal(signal.SIGTERM, prev_term)
+    signal.signal(signal.SIGINT, prev_int)
 
     return 0
 
