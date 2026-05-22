@@ -1,4 +1,4 @@
-name: review
+name: quick
 description: Implement with MiniMax, review with GLM, orchestrator validates
 
 steps:
