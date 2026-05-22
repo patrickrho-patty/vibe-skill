@@ -137,7 +137,7 @@ for raw in sys.stdin:
             warn_count += 1
             print(f'  [WARN]  {first_line}', flush=True)
 
-    elif item_type == 'message' or item_type == 'text':
+    elif item_type in ('message', 'text', 'agent_message'):
         content = item.get('content', '') or item.get('text', '') or ''
         if isinstance(content, list):
             content = ' '.join(c.get('text', '') for c in content if isinstance(c, dict))
