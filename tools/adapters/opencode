@@ -32,11 +32,13 @@ PROMPT_CONTENT=$(cat "$PROMPT_FILE")
 
 export DELEGATE_STATS_FILE="$STATS_FILE"
 
+OC_STDERR=$(mktemp /tmp/opencode-stderr-XXXXXX.log)
+
 timeout "$TIMEOUT_SECS" opencode run \
   --format json \
   --dir "$WORKDIR" \
   --dangerously-skip-permissions \
-  "$PROMPT_CONTENT" 2>/dev/null | python3 -c "
+  "$PROMPT_CONTENT" 2>"$OC_STDERR" | python3 -c "
 import sys, json, re, os, datetime
 
 tools_called = 0
@@ -147,5 +149,11 @@ if _sf:
         pass
 "
 OC_EXIT=${PIPESTATUS[0]}
+
+# Surface stderr on failure
+if [ "$OC_EXIT" -ne 0 ] && [ -s "$OC_STDERR" ]; then
+  echo "  [opencode-stderr] $(head -5 "$OC_STDERR")"
+fi
+rm -f "$OC_STDERR"
 
 exit $OC_EXIT

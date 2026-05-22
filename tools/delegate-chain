@@ -106,10 +106,38 @@ def parse_chain(path):
 
         m = re.match(r'^\s+prompt_template:\s*(.+)$', line)
         if m:
-            current_step['prompt_template'] = m.group(1).strip().strip('"\'')
+            value = m.group(1).strip().strip('"\'')
+            if value in ('|', '>', '|-', '>-'):
+                # Multi-line YAML block scalar — collect continuation lines
+                current_step['_collecting_prompt'] = True
+                current_step['prompt_template'] = ''
+            else:
+                current_step['prompt_template'] = value
             continue
 
+        # Collect multi-line prompt_template continuation lines
+        if current_step and current_step.get('_collecting_prompt'):
+            # Continuation lines are indented deeper than the key (8+ spaces typically)
+            if re.match(r'^\s{6,}', line):
+                sep = '\n' if current_step['prompt_template'] else ''
+                current_step['prompt_template'] += sep + line.strip()
+                continue
+            else:
+                # End of block — stop collecting, re-process this line
+                del current_step['_collecting_prompt']
+                # Fall through to re-check this line against other patterns
+                m2 = re.match(r'^\s+-\s+role:\s*(.+)$', line)
+                if m2:
+                    chain['steps'].append(current_step)
+                    current_step = {
+                        'role': m2.group(1).strip().strip('"\''),
+                        'agent': '', 'turns': 10, 'prompt_template': '',
+                    }
+                continue
+
     if current_step is not None:
+        if '_collecting_prompt' in current_step:
+            del current_step['_collecting_prompt']
         chain['steps'].append(current_step)
 
     return chain

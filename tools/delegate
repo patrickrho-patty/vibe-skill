@@ -101,6 +101,9 @@ if [ -f "$WORKDIR/.delegate/contracts.yaml" ]; then
   fi
 fi
 
+# Remove stale correction file from prior interrupted runs
+rm -f "$WORKDIR/.delegate/correction-prompt.txt"
+
 # Invoke harness-specific adapter
 "$ADAPTER_DIR/$HARNESS" "$WORKDIR" "$PROMPT_FILE" "$MAX_TURNS" "$AGENT" "$TIMEOUT_SECS" "$DELEGATE_STATS_FILE"
 ADAPTER_EXIT=$?
@@ -340,8 +343,12 @@ entry['wrote_nothing'] = (
     and entry.get('agent', 'default') not in _readonly_agents
 )
 
+import fcntl
 with open(LOG, 'a') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
     f.write(json.dumps(entry) + '\n')
+    f.flush()
+    fcntl.flock(f, fcntl.LOCK_UN)
 
 tok = entry.get('tokens_total', '?')
 saved = entry['cost_claude_eq'] - entry.get('cost_usd', 0)

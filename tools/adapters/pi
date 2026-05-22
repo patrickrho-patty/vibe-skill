@@ -41,7 +41,8 @@ if [ -n "$PI_MODEL_OVERRIDE" ]; then
   PI_CMD=(pi --mode json --model "$PI_MODEL_OVERRIDE" -p "$PROMPT_CONTENT")
 fi
 
-timeout "$TIMEOUT_SECS" "${PI_CMD[@]}" 2>/dev/null | python3 -c "
+PI_STDERR=$(mktemp /tmp/pi-stderr-XXXXXX.log)
+timeout "$TIMEOUT_SECS" "${PI_CMD[@]}" 2>"$PI_STDERR" | python3 -c "
 import sys, json, re, os, datetime
 
 tools_called = 0
@@ -136,5 +137,11 @@ if _sf:
         pass
 "
 PI_EXIT=${PIPESTATUS[0]}
+
+# Surface stderr on failure (auth errors, rate limits, crashes)
+if [ "$PI_EXIT" -ne 0 ] && [ -s "$PI_STDERR" ]; then
+  echo "  [pi-stderr] $(head -5 "$PI_STDERR")"
+fi
+rm -f "$PI_STDERR"
 
 exit $PI_EXIT

@@ -150,7 +150,7 @@ MERGE_ORDER=()
 
 for group in "${!GROUPS[@]}"; do
   members=(${GROUPS[$group]})
-  BRANCH="delegate-parallel-${group}-$(date +%s)"
+  BRANCH="delegate-parallel-${group}-$$-$(date +%s%N)"
   WTREE="$WORKTREE_BASE/$group"
   LOG="$WORKTREE_BASE/$group.log"
 
@@ -163,12 +163,14 @@ for group in "${!GROUPS[@]}"; do
   MERGE_ORDER+=("$group")
 
   # Run tasks in this group sequentially within a background subshell
+  # Stop on first failure to avoid running on corrupt state
   (
+    set -e
     for idx in "${members[@]}"; do
       prompt="${PROMPTS[$idx]}"
       echo "[${TASK_IDS[$idx]}] Starting: ${prompt:0:80}..."
       "$DELEGATE" "$HARNESS" "$WTREE" "$prompt" 10 "" 180
-      echo "[${TASK_IDS[$idx]}] Exit: $?"
+      echo "[${TASK_IDS[$idx]}] Exit: 0"
     done
   ) > "$LOG" 2>&1 &
 
@@ -214,8 +216,11 @@ for group in "${MERGE_ORDER[@]}"; do
     continue
   fi
 
-  # Commit all changes in the worktree
-  (cd "$wtree" && git add -A && git commit -m "delegate-parallel: $group" --no-verify 2>/dev/null) || true
+  # Commit changes in the worktree (exclude secrets/sensitive patterns)
+  (cd "$wtree" && \
+    git add -A && \
+    git reset HEAD -- '*.env' '*.pem' '*.key' '*.secret' '*.credentials' 2>/dev/null; \
+    git commit -m "delegate-parallel: $group" 2>/dev/null) || true
 
   # Merge into main working tree
   echo "  Merging group $group ($branch)..."
