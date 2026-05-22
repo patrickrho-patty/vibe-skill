@@ -292,28 +292,30 @@ escaping. **This is not a reason to build a workaround script** — that doubles
 **Critical rule**: Vibe is optimized for **atomic, focused tasks**.
 Its system prompt literally says "Most tasks need <150 words."
 
-**First: is this even a coding task?**
+**First: did the user explicitly specify a mode?**
+
+If the user typed `/vibe <mode>: <instruction>` with an explicit mode prefix,
+**ALWAYS delegate. No gate. No filtering.** The user chose a mode — respect it.
+`/vibe fix: validate & investigate R6.1` → run the fix chain. Period.
+
+**If NO mode was specified** (`/vibe <instruction>` without a mode prefix),
+then apply this filter — is it a coding task?
 
 Delegates are coding agents — they read files and write code. They cannot answer
-questions, explain concepts, have conversations, or provide analysis. Never delegate:
+questions, explain concepts, or have conversations. Don't delegate:
 
 | NOT delegatable | Handle directly |
 |-----------------|----------------|
 | Questions ("what does this function do?") | Answer from context |
 | Explanations ("explain the auth flow") | Explain directly |
 | Conversations ("what should we build?") | Discuss directly |
-| Code review (opinion-based) | Review directly |
-| Debugging analysis ("why is this failing?") | Investigate directly |
-| Architecture decisions | Decide directly |
 | Git operations (commit, push, branch) | Run directly |
 
 Only delegate when the task produces **file changes** — new code, modified code,
-documentation edits, config updates. If the user's intent doesn't result in writing
-to disk, the orchestrator handles it directly.
+documentation edits, config updates.
 
-**For auto-vibe mode (`/vibeon`):** This gate still applies. Even with auto-vibe
-enabled, questions and conversations stay with the orchestrator. Only route to a
-delegate when the user's message implies file changes.
+**For auto-vibe mode (`/vibeon`):** This filter applies only when no explicit
+mode is given. Questions and conversations stay with the orchestrator.
 
 **Then: is it worth delegating?**
 

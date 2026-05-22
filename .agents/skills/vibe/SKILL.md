@@ -15,20 +15,20 @@ allowed-tools:
 
 # Delegate Orchestrator
 
-## $vibe help
+## /vibe help
 
-When the user says `$vibe help`, print this help text directly
+When the user says `/vibe help` (or `$vibe help`), print this help text directly
 to the console and stop:
 
 ```
 vibe — AI delegation framework
 
 USAGE
-  $vibe <instruction>                    Direct delegation (simple mode)
-  $vibe <mode>: <instruction>            Inline mode (one-shot)
-  $vibe help                             This help text
+  /vibe <instruction>                    Direct delegation (simple mode)
+  /vibe <mode>: <instruction>            Inline mode (one-shot)
+  /vibe help                             This help text
 
-MODES (inline or persistent via $vibe-mode)
+MODES (inline or persistent via /vibe-mode)
   simple      Direct delegation, no chain (default)
   steady      SOTA plans → MiniMax implements → GLM validates
   quick       MiniMax implements → GLM reviews
@@ -47,36 +47,36 @@ AGENTS                                   Model
   Validator / Reviewer / Aggregator      GLM 5.1 (via codex -p glm)
 
 BACKGROUND AGENTS                        Model              Interval
-  $vibe-audit scan                       MiniMax M2.7       every 30m
-  $vibe-research scan                    GLM 5.1            every 2h
-  $vibe-reindex (knowledge update)       MiniMax M2.7       every 1h
+  /vibe-audit scan                       MiniMax M2.7       every 30m
+  /vibe-research scan                    GLM 5.1            every 2h
+  /vibe-reindex (knowledge update)       MiniMax M2.7       every 1h
   (configured in .delegate/scheduler.yaml)
 
 COMMANDS
-  $vibe <instruction>                    Delegate a coding task
-  $vibe <mode>: <instruction>            Delegate with inline mode
-  $vibe-mode <mode>                      Set persistent mode
-  $vibe-mode                             Show current mode + list all
-  $vibeon                                Enable auto-delegate
-  $vibeoff                               Disable auto-delegate
-  $vibestatus                            Show auto-mode + model status
-  $vibe-model-pick <alias>               Override model
-  $vibe-model-clear                      Clear model override
-  $vibe-report [--since N] [--fails]     Run history report (local, no model)
-  $vibe-reindex [--model <m>]            Update knowledge base (default: MiniMax)
-  $vibe-audit [scan] [--model <m>]       Audit findings (default: MiniMax)
-  $vibe-research [scan] [--model <m>]    Research findings (default: GLM)
-  $vibe-scheduler start|stop|status      Manage background agents
+  /vibe <instruction>                    Delegate a coding task
+  /vibe <mode>: <instruction>            Delegate with inline mode
+  /vibe-mode <mode>                      Set persistent mode
+  /vibe-mode                             Show current mode + list all
+  /vibeon                                Enable auto-delegate
+  /vibeoff                               Disable auto-delegate
+  /vibestatus                            Show auto-mode + model status
+  /vibe-model-pick <alias>               Override model
+  /vibe-model-clear                      Clear model override
+  /vibe-report [--since N] [--fails]     Run history report (local, no model)
+  /vibe-reindex [--model <m>]            Update knowledge base (default: MiniMax)
+  /vibe-audit [scan] [--model <m>]       Audit findings (default: MiniMax)
+  /vibe-research [scan] [--model <m>]    Research findings (default: GLM)
+  /vibe-scheduler start|stop|status      Manage background agents
 
 EXAMPLES
-  $vibe add a login page
-  $vibe steady: refactor the auth module
-  $vibe fix: the email validation is broken
-  $vibe docs: write API documentation
-  $vibe tournament: implement search
-  $vibe web: latest quantization techniques for LLMs
-  $vibe-mode ironclad
-  $vibe-scheduler start
+  /vibe add a login page
+  /vibe steady: refactor the auth module
+  /vibe fix: the email validation is broken
+  /vibe docs: write API documentation
+  /vibe tournament: implement search
+  /vibe web: latest quantization techniques for LLMs
+  /vibe-mode ironclad
+  /vibe-scheduler start
 ```
 
 ---
@@ -292,28 +292,30 @@ escaping. **This is not a reason to build a workaround script** — that doubles
 **Critical rule**: Vibe is optimized for **atomic, focused tasks**.
 Its system prompt literally says "Most tasks need <150 words."
 
-**First: is this even a coding task?**
+**First: did the user explicitly specify a mode?**
+
+If the user typed `/vibe <mode>: <instruction>` with an explicit mode prefix,
+**ALWAYS delegate. No gate. No filtering.** The user chose a mode — respect it.
+`/vibe fix: validate & investigate R6.1` → run the fix chain. Period.
+
+**If NO mode was specified** (`/vibe <instruction>` without a mode prefix),
+then apply this filter — is it a coding task?
 
 Delegates are coding agents — they read files and write code. They cannot answer
-questions, explain concepts, have conversations, or provide analysis. Never delegate:
+questions, explain concepts, or have conversations. Don't delegate:
 
 | NOT delegatable | Handle directly |
 |-----------------|----------------|
 | Questions ("what does this function do?") | Answer from context |
 | Explanations ("explain the auth flow") | Explain directly |
 | Conversations ("what should we build?") | Discuss directly |
-| Code review (opinion-based) | Review directly |
-| Debugging analysis ("why is this failing?") | Investigate directly |
-| Architecture decisions | Decide directly |
 | Git operations (commit, push, branch) | Run directly |
 
 Only delegate when the task produces **file changes** — new code, modified code,
-documentation edits, config updates. If the user's intent doesn't result in writing
-to disk, the orchestrator handles it directly.
+documentation edits, config updates.
 
-**For auto-vibe mode (`/vibeon`):** This gate still applies. Even with auto-vibe
-enabled, questions and conversations stay with the orchestrator. Only route to a
-delegate when the user's message implies file changes.
+**For auto-vibe mode (`/vibeon`):** This filter applies only when no explicit
+mode is given. Questions and conversations stay with the orchestrator.
 
 **Then: is it worth delegating?**
 
