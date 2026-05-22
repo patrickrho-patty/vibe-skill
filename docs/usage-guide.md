@@ -10,6 +10,8 @@ A practical manual for every feature in vibe-skill — the multi-harness AI codi
 
 The tools live at `~/tools/`. No install step beyond cloning the repo and ensuring the scripts are executable:
 
+**macOS users:** `brew install coreutils` (required — provides `timeout` command used by all adapters)
+
 ```bash
 ls ~/tools/delegate            # should exist
 chmod +x ~/tools/delegate*     # make executable if needed
@@ -1156,6 +1158,9 @@ See `CODEX-SKILL.md` for the full Codex-specific invocation format.
 ## Troubleshooting
 
 ### Common issues
+
+**`"timeout: command not found"`**
+→ Run `brew install coreutils` (macOS only — GNU coreutils provides the `timeout` command required by all adapters).
 
 **"vibe hangs silently, no output"**
 → TTY issue. The delegate adapter handles this automatically via `script`. If calling Vibe directly, you're missing the TTY allocation. Always go through `~/tools/delegate`.

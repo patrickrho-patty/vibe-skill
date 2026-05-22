@@ -168,7 +168,7 @@ Mitigation: grep for the exact target before constructing the SEARCH block; phra
 - [OpenCode](https://opencode.ai) CLI — optional, for the `opencode` harness
 - [Claude Code](https://claude.ai/code) with skills enabled
 - `script` command available (GNU/Linux or BSD/macOS variant)
-- `timeout` command available; on macOS install GNU coreutils for `gtimeout` (or ensure your chosen `timeout` fallback is set up)
+- **macOS users:** `brew install coreutils` (required — provides `timeout` command used by all adapters)
 - `python3` and optionally `node` for syntax checks
 - A git repository to work in
 
@@ -179,6 +179,8 @@ Mitigation: grep for the exact target before constructing the SEARCH block; phra
 Install per-project — tools and skills live inside `<your-project>/.claude/vibe-skill/`.
 
 ### Quick install (one command)
+
+**macOS users:** `brew install coreutils` first — provides the `timeout` command required by all adapters.
 
 ```bash
 # From your project root:

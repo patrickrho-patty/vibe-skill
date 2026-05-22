@@ -264,6 +264,12 @@ instructions precisely, GLM validates against your plan.
 
 Hard constraints of Mistral Vibe CLI — not config options.
 
+### 0. macOS requires GNU coreutils
+All delegate adapters use `timeout`. macOS ships without it — install via:
+```bash
+brew install coreutils
+```
+
 ### 1. Requires a pseudo-TTY
 Vibe checks for a TTY on startup. Without one (plain pipe), it hangs silently —
 0 tool calls, no output, silent timeout. The `vibe-delegate` script allocates a
