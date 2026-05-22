@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+KST = timezone(timedelta(hours=9))
+
 FINDINGS_FILE = '.delegate/audit-findings.jsonl'
 
 SKIP = {'.git', 'node_modules', '.delegate', 'venv', '.venv', '__pycache__', 'dist', 'build', '.claude'}
@@ -90,7 +92,7 @@ def make_id(filepath: str, line: int, concern: str) -> str:
 
 
 def now_utc() -> str:
-    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00')
 
 
 def word_set(text: str) -> set:
@@ -479,7 +481,7 @@ def cmd_prune(args: list) -> int:
     args = list(args) if not args else args
     workdir, _ = _resolve_workdir(args)
     findings = load_findings(workdir)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(KST)
     threshold_open = now - timedelta(days=7)
     threshold_closed = now - timedelta(days=30)
 

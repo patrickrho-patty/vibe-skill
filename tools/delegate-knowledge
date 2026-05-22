@@ -12,6 +12,8 @@ import os
 import sys
 import json
 import datetime
+
+_KST = datetime.timezone(datetime.timedelta(hours=9))
 import subprocess
 from pathlib import Path
 
@@ -262,7 +264,7 @@ def cmd_init(workdir: Path):
     knowledge_path.write_text(text)
 
     meta = {
-        'last_update': datetime.datetime.utcnow().isoformat() + 'Z',
+        'last_update': datetime.datetime.now(_KST).strftime('%Y-%m-%dT%H:%M:%S+09:00'),
         'delegations_since': 0,
         'model': 'default',
     }
@@ -304,7 +306,7 @@ def cmd_update(workdir: Path):
     knowledge_path.write_text(text)
 
     meta = read_meta(delegate_dir)
-    meta['last_update'] = datetime.datetime.utcnow().isoformat() + 'Z'
+    meta['last_update'] = datetime.datetime.now(_KST).strftime('%Y-%m-%dT%H:%M:%S+09:00')
     meta['delegations_since'] = 0
     meta['model'] = model_override
     write_meta(delegate_dir, meta)

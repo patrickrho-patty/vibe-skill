@@ -1,10 +1,10 @@
 ---
 name: vibe
 description: >
-  Delegate coding tasks to cheap AI coding agents (Vibe, Pi, OpenCode) and supervise
-  via git diff. Multi-harness support with reject-correct loops, contracts, parallel
-  execution, and routing. Trigger: /vibe <instruction> or /delegate <harness> <instruction>.
-  Also: /vibe-report, /delegate-dashboard, /delegate-chain, /delegate-batch.
+  Delegate coding tasks to cheap AI coding agents (MiniMax, GLM via Codex) and supervise
+  via git diff. Reject-correct loops, contracts, parallel execution, chains, and routing.
+  Trigger: /vibe <instruction>. Also: /vibe-report, /vibe-research-intake,
+  /delegate-dashboard, /delegate-chain, /delegate-batch.
 license: MIT
 user-invocable: true
 allowed-tools:
@@ -66,6 +66,7 @@ COMMANDS
   /vibe-reindex [--model <m>]            Update knowledge base (default: MiniMax)
   /vibe-audit [scan] [--model <m>]       Audit findings (default: MiniMax)
   /vibe-research [scan] [--model <m>]    Research findings (default: GLM)
+  /vibe-research-intake                  SOTA reviews open research findings
   /vibe-scheduler start|stop|status      Manage background agents
 
 EXAMPLES (modes support 2+ char prefix shortcuts)
@@ -77,6 +78,7 @@ EXAMPLES (modes support 2+ char prefix shortcuts)
   /vibe we: latest quantization techniques    (web)
   /vibe ir: add auth with full pipeline       (ironclad)
   /vibe-mode ir                               (sets ironclad)
+  /vibe-research-intake                       (review open research findings)
   /vibe-scheduler start
 ```
 
@@ -139,27 +141,15 @@ Run the bash command, print one confirmation line showing the active model, and 
 
 ---
 
-## Multi-Harness Commands
+## Delegation Commands
 
 | Command | Action |
 |---------|--------|
-| `/vibe <instruction>` | Delegate to Vibe (default harness) |
-| `/delegate <harness> <instruction>` | Delegate to specific harness (vibe, pi, opencode) |
+| `/vibe <instruction>` | Delegate to the default harness (Codex) |
 | `/delegate-dashboard` | Show live TUI dashboard: `.claude/vibe-skill/tools/delegate-dashboard` |
-| `/delegate-batch <prompt>` | Smart batch: `.claude/vibe-skill/tools/delegate-batch "$WORKDIR" "<prompt>"` |
-| `/delegate-chain <chain>` | Run chain: `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" ".delegate/chains/<chain>.yaml"` |
-| `/delegate-route <description>` | Recommend harness: `.claude/vibe-skill/tools/delegate-router recommend "<desc>"` |
-
-**Harness selection:** Use `/delegate-route` to check which harness is best for
-a task, or pick manually. Default is `vibe` until routing data accumulates.
-
-**Available harnesses:**
-
-| Harness | Status | Strengths |
-|---------|--------|-----------|
-| `vibe` | Active | General implementation, mature adapter |
-| `pi` | Stub | Pending Pi CLI investigation |
-| `opencode` | Stub | Pending OpenCode CLI investigation |
+| `/delegate-batch <prompt>` | Smart batch: `.claude/vibe-skill/tools/delegate-batch "<prompt>"` |
+| `/delegate-chain <chain>` | Run chain: `.claude/vibe-skill/tools/delegate-chain ".delegate/chains/<chain>.yaml" "<task>"` |
+| `/delegate-route <description>` | Recommend model: `.claude/vibe-skill/tools/delegate-router recommend "<desc>"` |
 
 ---
 
@@ -276,7 +266,7 @@ Add authentication to the API. Use JWT tokens. Protect the routes.
    [your detailed plan here]
    PLAN
    ```
-5. Then run the chain: `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" "<chain-yaml>"`
+5. Then run the chain: `.claude/vibe-skill/tools/delegate-chain "<chain-yaml>" "<task>"`
 6. The chain reads `.delegate/plan.md` and injects it as `{plan}` into subsequent steps
 
 The `architect` mode does exactly this: you plan in detail, MiniMax follows your
@@ -286,7 +276,7 @@ instructions precisely, GLM validates against your plan.
 
 ## Known Limits
 
-Hard constraints of Mistral Vibe CLI — not config options.
+Hard constraints of the Vibe CLI adapter — applies when using `adapters/vibe`, not the default Codex adapter.
 
 ### 0. macOS requires GNU coreutils
 All delegate adapters use `timeout`. macOS ships without it — install via:
@@ -477,17 +467,20 @@ VERIFY: grep for "datetime.date" in app.py and confirm it appears in fetch_data.
 ## Step 4 — Launch Delegation
 
 ```bash
-.claude/vibe-skill/tools/delegate <harness> "<workdir>" "<prompt>" [max-turns] [agent] [timeout-secs]
+.claude/vibe-skill/tools/delegate-chain "<chain-yaml>" "<task>"
+```
+
+Workdir defaults to cwd. To override:
+
+```bash
+.claude/vibe-skill/tools/delegate-chain "<chain-yaml>" "<task>" "<workdir>"
 ```
 
 | Argument       | Default  | Notes                                           |
 |----------------|----------|-------------------------------------------------|
-| `harness`      | `vibe`   | Which coding agent: vibe, pi, opencode          |
-| `workdir`      | —        | Absolute path, must exist                       |
-| `prompt`       | —        | Self-contained task description                 |
-| `max-turns`    | `10`     | Turn limit — hard cap at 12, never more         |
-| `agent`        | *(none)* | See agent table below                           |
-| `timeout-secs` | `600`    | Wall-clock kill timer (10 minutes)              |
+| `chain-yaml`   | —        | Path to chain file (e.g. `.delegate/chains/steady.yaml`) |
+| `task`         | —        | Self-contained task description                 |
+| `workdir`      | cwd      | Absolute path; defaults to current directory    |
 
 The script automatically: creates a rollback checkpoint, injects the project brief
 (if `.delegate/project-brief.md` exists), runs pre-contracts, allocates a pseudo-TTY
@@ -512,8 +505,8 @@ The script automatically: creates a rollback checkpoint, injects the project bri
 
 **Background launch:**
 ```bash
-.claude/vibe-skill/tools/vibe-delegate "<workdir>" "<prompt>" 10 > /tmp/vibe_out.txt 2>&1 &
-# Monitor with: tail -f /tmp/vibe_out.txt
+.claude/vibe-skill/tools/delegate-chain "<chain-yaml>" "<task>" > /tmp/delegate_out.txt 2>&1 &
+# Monitor with: tail -f /tmp/delegate_out.txt
 ```
 
 ---
@@ -615,20 +608,20 @@ After the delegate finishes, classify the result:
 
 **To send a correction back:**
 ```bash
-.claude/vibe-skill/tools/delegate-reject "$WORKDIR" "The import on line 3 is wrong. Change from utils import foo to from app.utils import foo. Do not touch anything else."
+.claude/vibe-skill/tools/delegate-reject "The import on line 3 is wrong. Change from utils import foo to from app.utils import foo. Do not touch anything else."
 ```
-Then re-run `.claude/vibe-skill/tools/delegate <harness> "$WORKDIR" "<original-prompt>"` — the
+Then re-run `.claude/vibe-skill/tools/delegate-chain "<chain-yaml>" "<original-task>"` — the
 correction file is picked up automatically (max 2 correction rounds).
 
 **Rollback if needed:**
 ```bash
-.claude/vibe-skill/tools/delegate-rollback rollback "$WORKDIR" "<checkpoint-branch>"
+.claude/vibe-skill/tools/delegate-rollback rollback "<checkpoint-branch>"
 ```
 
 - **Max 2 correction rounds** before escalating to `reject-retry` or `reject-abort`.
 - Between rounds, **read the git diff** to avoid doubling partial work.
 - If all correction rounds fail, escalate to the user — do NOT fix it yourself.
-- Record failures: `.claude/vibe-skill/tools/delegate-failures record "$WORKDIR" vibe <error_type> "<symptom>" "<fix>"`
+- Record failures: `.claude/vibe-skill/tools/delegate-failures record codex <error_type> "<symptom>" "<fix>"`
 
 ## Step 6b — Log manual completion (legacy)
 
@@ -786,7 +779,7 @@ jq 'select(.search_replace_fails > 0)' .delegate/runs.jsonl
 
 | Field                 | Type    | Description                                          |
 |-----------------------|---------|------------------------------------------------------|
-| `harness`             | string  | Which harness was used (vibe, pi, opencode)          |
+| `harness`             | string  | Which harness was used (e.g. `"codex"`, `"vibe"`)    |
 | `checkpoint`          | string  | Rollback checkpoint branch name                      |
 | `correction_rounds`   | int     | Number of reject-correct cycles (0 = accepted first) |
 | `final_disposition`   | string  | `accepted`, `corrected`, `correction_failed`         |
@@ -800,9 +793,8 @@ jq 'select(.search_replace_fails > 0)' .delegate/runs.jsonl
 | Tool | Purpose |
 |------|---------|
 | `.claude/vibe-skill/tools/delegate` | Generic delegation entry point |
+| `.claude/vibe-skill/tools/adapters/codex` | Codex adapter (default) — `codex exec --json -p <profile>` |
 | `.claude/vibe-skill/tools/adapters/vibe` | Vibe harness adapter |
-| `.claude/vibe-skill/tools/adapters/pi` | Pi adapter (stub) |
-| `.claude/vibe-skill/tools/adapters/opencode` | OpenCode adapter (stub) |
 | `.claude/vibe-skill/tools/delegate-rollback` | Git branch checkpoint management |
 | `.claude/vibe-skill/tools/delegate-reject` | Write correction prompt for reject-correct |
 | `.claude/vibe-skill/tools/delegate-correct` | Send correction to harness directly |
@@ -811,7 +803,7 @@ jq 'select(.search_replace_fails > 0)' .delegate/runs.jsonl
 | `.claude/vibe-skill/tools/delegate-ast-check` | AST-level semantic validation |
 | `.claude/vibe-skill/tools/delegate-failures` | Failure memory — record and query |
 | `.claude/vibe-skill/tools/delegate-learnings` | Learning loop — capture correction patterns |
-| `.claude/vibe-skill/tools/delegate-router` | Recommend harness based on run history |
+| `.claude/vibe-skill/tools/delegate-router` | Recommend model based on run history |
 | `.claude/vibe-skill/tools/delegate-parallel` | Run tasks in parallel via git worktrees |
 | `.claude/vibe-skill/tools/delegate-batch` | Smart batching for bulk tasks |
 | `.claude/vibe-skill/tools/delegate-chain` | Multi-step delegation workflows |
@@ -819,6 +811,8 @@ jq 'select(.search_replace_fails > 0)' .delegate/runs.jsonl
 | `.claude/vibe-skill/tools/delegate-dashboard` | Live TUI dashboard |
 | `.claude/vibe-skill/tools/delegate-distill` | Generate project brief for context injection |
 | `.claude/vibe-skill/tools/delegate-report` | Historical token/cost/failure report |
+| `.claude/vibe-skill/tools/delegate-research-intake` | SOTA review of open research findings |
+| `.claude/vibe-skill/tools/jina-search` | curl-based JINA web search (API key from .env) |
 | `.claude/vibe-skill/tools/vibe-delegate` | Backward-compat shim → `delegate vibe` |
 
 ---
@@ -826,6 +820,7 @@ jq 'select(.search_replace_fails > 0)' .delegate/runs.jsonl
 ## See Also
 
 - Codex orchestrator support: see `CODEX-SKILL.md`
+- Research intake skill: `.agents/skills/vibe-research-intake/SKILL.md`
 - Pre-built delegation chains: `.delegate/chains/implement.yaml`, `.delegate/chains/bugfix.yaml`
 - A sister delegate using Gemini CLI exists: [gemini-skill](https://github.com/pcx-wave/gemini-skill).
   Both write to the same `delegate-runs.jsonl` log, making runs comparable across delegates.

@@ -10,6 +10,7 @@ import re
 import json
 import hashlib
 import datetime
+_KST = datetime.timezone(datetime.timedelta(hours=9))
 from pathlib import Path
 
 
@@ -581,7 +582,7 @@ def main():
     models = extract_models(root, stacks)
     conventions = detect_conventions(root, stacks)
     gotchas = detect_gotchas(root, stacks)
-    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.datetime.now(_KST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
 
     # Stack line
     stack_lines = []

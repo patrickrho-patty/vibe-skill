@@ -61,6 +61,7 @@ CODEX_STDERR=$(mktemp /tmp/codex-stderr-XXXXXX)
 
 timeout "$TIMEOUT_SECS" "${CODEX_CMD[@]}" 2>"$CODEX_STDERR" | python3 -c "
 import sys, json, re, os, datetime
+_KST = datetime.timezone(datetime.timedelta(hours=9))
 
 tools_called = 0
 warn_count = 0
@@ -89,7 +90,7 @@ session_dir = os.path.join(workdir, '.delegate', 'sessions')
 os.makedirs(session_dir, exist_ok=True)
 session_file = os.path.join(
     session_dir,
-    datetime.datetime.utcnow().strftime('%Y-%m-%dT%H-%M-%SZ') + '-codex.jsonl'
+    datetime.datetime.now(_KST).strftime('%Y-%m-%dT%H-%M-%S+0900') + '-codex.jsonl'
 )
 sf = open(session_file, 'w')
 

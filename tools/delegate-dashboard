@@ -6,6 +6,8 @@ Usage: delegate-dashboard [--refresh SECS] [--project NAME] [--dir WORKDIR]
 import sys, os, json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from collections import defaultdict
 
 def get_log_path(workdir: str = '') -> Path:
@@ -39,7 +41,7 @@ def format_cost(cost: float) -> str:
 
 def plain_dashboard(runs: list):
     """Plain text dashboard fallback."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(KST)
     today = now.date()
 
     print("=" * 60)
@@ -138,7 +140,7 @@ def build_rich_display(console, project_filter: str, workdir: str = ''):
     from rich.panel import Panel
     from rich import box
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(KST)
     today = now.date()
     current_runs = load_runs(project_filter, workdir)
 

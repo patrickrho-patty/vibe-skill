@@ -11,6 +11,8 @@ Usage:
 import sys, os, json, re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from collections import Counter
 
 def get_log_path(workdir: str) -> Path:
@@ -39,7 +41,7 @@ def record(workdir: str, harness: str, original_prompt: str, correction_diff_fil
     affected_files = list(set(affected_files))
 
     entry = {
-        'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'ts': datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00'),
         'workdir': workdir,
         'project': os.path.basename(workdir),
         'harness': harness,
@@ -76,7 +78,7 @@ def classify_correction(diff: str) -> str:
 def analyze(workdir: str = '', harness_filter: str = '', since_days: int = 30):
     """Analyze correction patterns."""
     LOG = get_log_path(workdir or os.getcwd())
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+    cutoff = datetime.now(KST) - timedelta(days=since_days)
 
     try:
         entries = [json.loads(line) for line in LOG.read_text().splitlines() if line.strip()]
@@ -130,7 +132,7 @@ def analyze(workdir: str = '', harness_filter: str = '', since_days: int = 30):
 def suggest(workdir: str, harness: str, task_type: str = ''):
     """Suggest prompt improvements based on learnings."""
     LOG = get_log_path(workdir)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.now(KST) - timedelta(days=30)
 
     try:
         entries = [json.loads(line) for line in LOG.read_text().splitlines() if line.strip()]

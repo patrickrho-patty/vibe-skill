@@ -15,7 +15,9 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from pathlib import Path
 
 try:
@@ -48,7 +50,7 @@ def log(workdir: Path, message: str) -> None:
     if log_file.exists():
         lines = log_file.read_text().splitlines()
     lines = lines[-99:]  # keep last 99
-    ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    ts = datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00')
     lines.append(f"{ts} {message}")
     log_file.write_text('\n'.join(lines) + '\n')
 
@@ -148,7 +150,7 @@ def minutes_since_last_run(job_name: str, state: dict) -> float:
         return float('inf')
     try:
         last_dt = datetime.fromisoformat(last_run.replace('Z', '+00:00'))
-        delta = datetime.now(timezone.utc) - last_dt
+        delta = datetime.now(KST) - last_dt
         return delta.total_seconds() / 60.0
     except (ValueError, TypeError):
         return float('inf')
@@ -196,7 +198,7 @@ def launch_job(job_name: str, job_config: dict, workdir: Path, state: dict) -> N
     pid_file = workdir / '.delegate' / f'{job_name}.pid'
     pid_file.write_text(str(proc.pid) + '\n')
 
-    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    now_iso = datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00')
     state.setdefault(job_name, {})
     state[job_name]['status'] = 'running'
     state[job_name]['pid'] = proc.pid
@@ -378,7 +380,7 @@ def cmd_status(workdir: Path) -> None:
         print("No jobs configured")
         return
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(KST)
     print(f"{'Job':<20} {'Status':<10} {'Last Run':<25} {'Next Run'}")
     print('-' * 80)
 

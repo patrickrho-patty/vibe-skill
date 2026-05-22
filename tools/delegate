@@ -337,7 +337,8 @@ export DELEGATE_CONTRACT_POST_PASS="$CONTRACT_POST_PASS"
 python3 << 'PYLOG'
 import json, os
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+KST = timezone(timedelta(hours=9))
 
 LOG = Path(os.environ.get('DELEGATE_WORKDIR', '')) / '.delegate' / 'runs.jsonl'
 LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -357,7 +358,7 @@ duration = round((end_ns - start_ns) / 1e9, 1) if start_ns and end_ns else 0
 harness = os.environ.get('DELEGATE_HARNESS', 'vibe')
 
 entry = {
-    'ts':            datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'ts':            datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00'),
     'harness':       harness,
     'delegate':      harness,
     'workdir':       os.environ.get('DELEGATE_WORKDIR', ''),

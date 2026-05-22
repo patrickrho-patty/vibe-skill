@@ -12,6 +12,8 @@ import sys, os, json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+KST = timezone(timedelta(hours=9))
+
 def get_log_path(workdir: str) -> Path:
     log = Path(workdir) / '.delegate' / 'failures.jsonl'
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -23,7 +25,7 @@ def record(workdir: str, harness: str, error_type: str, symptom: str, fix_applie
     """Record a failure."""
     LOG = get_log_path(workdir)
     entry = {
-        'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'ts': datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00'),
         'workdir': workdir,
         'project': os.path.basename(workdir),
         'harness': harness,
@@ -41,7 +43,7 @@ def query(workdir: str, files: list[str]) -> list[dict]:
     """Query relevant failures for the given workdir/files."""
     LOG = get_log_path(workdir)
     project = os.path.basename(workdir)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.now(KST) - timedelta(days=30)
     relevant = []
 
     try:
@@ -99,7 +101,7 @@ def query(workdir: str, files: list[str]) -> list[dict]:
 def prune(workdir: str):
     """Remove entries older than 30 days."""
     LOG = get_log_path(workdir)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.now(KST) - timedelta(days=30)
     kept = []
     removed = 0
 

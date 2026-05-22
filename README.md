@@ -6,7 +6,7 @@
 
 **Claude orchestrates. Cheap coding agents do the heavy lifting. You review the diff, save tokens, costs, and avoid hitting limits.**
 
-> **This is a fork.** The [original vibe-skill](https://github.com/pcx-wave/vibe-skill) delegates to Vibe only. This fork extends it into a **multi-harness delegation framework** with 16 new features. Everything below this box is new.
+> **This is a fork.** The [original vibe-skill](https://github.com/pcx-wave/vibe-skill) delegates to Vibe only. This fork extends it into a **full delegation framework** with chains, research, audit, and more. Everything below this box is new.
 
 ---
 
@@ -16,8 +16,8 @@
 <tr>
 <td width="50%" valign="top">
 
-**Multi-Harness Support**
-Route tasks to **Vibe**, **Pi**, or **OpenCode** — not just Mistral. Each harness has its own adapter. Use `/delegate <harness> <instruction>` or let the router pick for you.
+**Codex-Only Harness**
+All delegations go through the **Codex CLI** adapter using `-p <profile>` for model switching. Models are MiniMax M2.7 (`-p minimax`) and GLM 5.1 (`-p glm`). Use `/vibe <mode>: <instruction>` or let the chain pick the right model.
 
 **Reject-and-Correct Loop**
 The orchestrator **never writes code itself**. When a delegate makes a mistake, Claude sends a correction prompt *back* to the cheap model instead of fixing it with expensive tokens. Max 2 rounds, then escalate.
@@ -32,7 +32,7 @@ Define pre/post conditions in `.delegate/contracts.yaml`. Pre-checks block bad d
 Run independent tasks simultaneously, each in its own git worktree. File overlap is detected before dispatch — conflicting tasks run sequentially, everything else runs in parallel.
 
 **Multi-Step Chains**
-Define workflows like `planner -> implementor -> validator` in YAML. Each step can use a **different harness and model** — e.g., Pi (MiniMax) implements, Pi (GLM) reviews, Claude validates.
+Define workflows like `planner -> implementor -> validator` in YAML. Each step can use a **different model** — e.g., MiniMax implements, GLM reviews, SOTA (Claude/Codex) validates.
 
 **SOTA Planning (Architect Mode)**
 Every chain with a planning step uses `sota: true` — the orchestrator (Claude/Codex) writes the plan, cheap models execute it. Plan saved to `.delegate/plan.md`. Use `/vibe-mode architect` to make this explicit.
@@ -44,7 +44,10 @@ Every chain with a planning step uses `sota: true` — the orchestrator (Claude/
 `/vibe-audit scan` runs a read-only agent that finds bugs and code smells per-file. `/vibe-audit` shows the findings. SOTA reviews valid findings and fixes them.
 
 **Continuous Research**
-`/vibe-research scan` triggers deep web research via JINA — finds arxiv papers, CVEs, best practices, and newer alternatives. `/vibe-research` shows the accumulated findings.
+`/vibe-research scan` triggers deep web research via JINA — finds arxiv papers, CVEs, best practices, and newer alternatives. `/vibe-research` shows the accumulated findings. Uses `jina-search` (curl + JINA API key from `.env`) internally.
+
+**Research Intake**
+`/vibe-research-intake` is a SOTA-only review command. Lists open findings, lets you graduate each with an action (`fix`, `refactor`, `doc`, `improve`, `ack`, `dismiss`, `defer`), and records what was done. Deferred findings resurface automatically at their review date.
 
 **Scheduler**
 `/vibe-scheduler start` runs audit, research, and knowledge-base updates continuously in the background. Configure cadence in `.delegate/scheduler.yaml`. Stop with `/vibe-scheduler stop`, check status with `/vibe-scheduler status`.
@@ -92,14 +95,14 @@ Codex CLI can be the manager too — same delegate scripts, different orchestrat
 
 Claude sees only ~500–1500 tokens per run regardless of how many file reads the delegate performs internally — massive savings on exploratory and implementation tasks.
 
-Supports **Vibe (Mistral), Pi (earendil-works), and OpenCode** as delegate harnesses. Vibe works natively with Mistral models (capable and significantly cheaper than Claude), but can also be configured to use any other provider/model such as DeepSeek.
+Uses **Codex CLI** as the delegate harness, with MiniMax M2.7 and GLM 5.1 as the cheap models (via `-p` profiles through 9Router). The Vibe adapter remains available for direct use.
 
 Summary:
-1. User types `/vibe <instruction>` or `/delegate <harness> <instruction>` in Claude Code
+1. User types `/vibe <instruction>` in Claude Code (or `$vibe` in Codex)
 2. Claude decomposes the task and writes a prompt
-3. `delegate` routes to the right harness adapter and runs the coding agent
+3. `delegate-chain` runs the chain — MiniMax implements, GLM reviews
 4. The delegate reports tool calls, token counts, and `git diff --stat`
-5. Claude reviews the diff and summarizes the result — sending corrections back to the harness if needed
+5. Claude reviews the diff and summarizes the result — sending corrections back if needed
 
 ---
 
@@ -163,14 +166,14 @@ Mitigation: grep for the exact target before constructing the SEARCH block; phra
 
 ## Prerequisites
 
-- [Mistral Vibe](https://vibe.mistral.ai/) CLI installed and authenticated (`vibe --version`) — required for the `vibe` harness
-- [Pi](https://earendil.works) CLI — optional, for the `pi` harness
-- [OpenCode](https://opencode.ai) CLI — optional, for the `opencode` harness
+- [Codex CLI](https://github.com/openai/codex) installed and configured with `minimax` and `glm` profiles in `~/.codex/config.toml` — required for delegation
+- [Mistral Vibe](https://vibe.mistral.ai/) CLI — optional, only needed if using the `vibe` adapter directly
 - [Claude Code](https://claude.ai/code) with skills enabled
 - `script` command available (GNU/Linux or BSD/macOS variant)
 - **macOS users:** `brew install coreutils` (required — provides `timeout` command used by all adapters)
 - `python3` and optionally `node` for syntax checks
 - A git repository to work in
+- JINA API key in `.env` as `JINA_API_KEY` — required for `/vibe-research scan`
 
 ---
 
@@ -183,10 +186,18 @@ Install per-project — tools and skills live inside `<your-project>/.claude/vib
 **macOS users:** `brew install coreutils` first — provides the `timeout` command required by all adapters.
 
 ```bash
-# From your project root:
+# From your project root — interactive installer:
+curl -fsSL https://raw.githubusercontent.com/pcx-wave/vibe-skill/main/install.sh | bash
+```
+
+Or manual clone:
+
+```bash
 git clone https://github.com/pcx-wave/vibe-skill.git .claude/vibe-skill
 chmod +x .claude/vibe-skill/tools/delegate* .claude/vibe-skill/tools/adapters/*
 ```
+
+`install.sh` is interactive — it detects existing installs, offers to update in place, and sets up the `.delegate/` directory structure.
 
 ### For Codex (automatic)
 
@@ -210,7 +221,7 @@ your-project/
       SKILL.md            ← Claude Code picks this up as a skill (/vibe)
       tools/
         delegate           ← main entry point
-        adapters/          ← codex (default), vibe, pi, opencode
+        adapters/          ← codex (default), vibe
         delegate-*         ← all 25+ tools
       .delegate/
         chains/            ← pre-built chain configs (steady, fix, fortress, etc.)
@@ -232,7 +243,7 @@ Claude Code auto-discovers skills under `.claude/` — no symlinks needed.
 ### Generate a project brief (recommended)
 
 ```bash
-python3 .claude/vibe-skill/tools/delegate-distill .
+python3 .claude/vibe-skill/tools/delegate-distill
 ```
 
 This creates `.delegate/project-brief.md` with your stack, key files, and conventions — auto-injected into every delegation prompt.
@@ -240,6 +251,10 @@ This creates `.delegate/project-brief.md` with your stack, key files, and conven
 ### Updating
 
 ```bash
+# Re-run the installer (detects existing install and updates):
+curl -fsSL https://raw.githubusercontent.com/pcx-wave/vibe-skill/main/install.sh | bash
+
+# Or manually:
 cd .claude/vibe-skill && git pull
 ```
 
@@ -267,55 +282,44 @@ In a Claude Code session, delegate to the default harness (Vibe):
 /vibe add pagination to the GET /posts route, 20 items per page
 ```
 
-### Multi-harness delegation
-
-Use `/delegate` to specify a harness explicitly:
-
-```
-/delegate vibe add pagination to the GET /posts route
-/delegate pi refactor the auth middleware into its own module
-/delegate opencode add docstrings to all public functions in utils.py
-```
-
-Claude decomposes the task, writes the prompt, supervises execution, and reports the diff. If the output has fixable issues, Claude sends a correction back to the harness (reject-correct loop) rather than writing the fix itself.
+Claude decomposes the task, writes the prompt, supervises execution, and reports the diff. If the output has fixable issues, Claude sends a correction back to the delegate (reject-correct loop) rather than writing the fix itself.
 
 ### Advanced commands
 
 ```
-/delegate-dashboard     — live TUI showing active runs, cost, and trends
-/delegate-batch <task>  — smart batching for bulk tasks ("add docstrings to all functions")
-/delegate-chain <chain> — multi-step workflow (planner → implementor → validator)
-/delegate-route <desc>  — recommend best harness based on run history
-/vibe-mode <mode>       — run a pre-built chain (steady, fix, fortress, architect, tournament, ...)
-/vibe-reindex           — build or update the project knowledge base (.delegate/knowledge.md)
-/vibe-audit             — show background audit findings
-/vibe-audit scan        — trigger a new read-only audit scan
-/vibe-research          — show continuous research findings
-/vibe-research scan     — trigger a new deep web research pass
-/vibe-scheduler start   — start background audit/research/knowledge workers
-/vibe-scheduler stop    — stop all background workers
-/vibe-scheduler status  — show what is currently running
+/delegate-dashboard        — live TUI showing active runs, cost, and trends
+/delegate-batch <task>     — smart batching for bulk tasks ("add docstrings to all functions")
+/delegate-chain <chain>    — multi-step workflow (planner → implementor → validator)
+/vibe-mode <mode>          — run a pre-built chain (steady, fix, fortress, architect, tournament, ...)
+/vibe-reindex              — build or update the project knowledge base (.delegate/knowledge.md)
+/vibe-audit                — show background audit findings
+/vibe-audit scan           — trigger a new read-only audit scan
+/vibe-research             — show continuous research findings
+/vibe-research scan        — trigger a new deep web research pass (uses jina-search internally)
+/vibe-research-intake      — SOTA reviews open research findings and graduates each with an action
+/vibe-scheduler start      — start background audit/research/knowledge workers
+/vibe-scheduler stop       — stop all background workers
+/vibe-scheduler status     — show what is currently running
 ```
 
 ### Model selection
 
-By default, Vibe uses whatever `active_model` is set in `~/.vibe/config.toml`. You can override it per-session without touching that file:
+Models are selected via Codex profiles (`-p minimax` for MiniMax M2.7, `-p glm` for GLM 5.1). You can override the model for a session:
 
 ```
-/vibe-model-pick              — interactive menu built from your config.toml models
-/vibe-model-pick devstral-small  — switch directly by alias
-/vibe-model-clear             — remove the override, return to config default
-/vibestatus                   — shows both auto-mode state and active model override
+/vibe-model-pick <alias>  — switch active model by alias
+/vibe-model-clear         — remove the override, return to chain default
+/vibestatus               — shows auto-mode state and active model override
 ```
 
-The override is stored in `~/.local/share/vibe-model.flag` and is picked up by `delegate` on every run. It persists across sessions until you clear it.
+The override is stored in `.delegate/model.flag` and is picked up by `delegate-chain` on every run. It persists until cleared.
 
-### Vibe-auto mode
+### Auto-delegate mode
 
 For frictionless delegation, enable auto-mode once in your Claude Code session:
 
 ```
-/vibeon      — every code request is automatically delegated to Vibe, no /vibe prefix needed
+/vibeon      — every code request is automatically delegated, no /vibe prefix needed
 /vibeoff     — return to normal Claude behaviour
 /vibestatus  — auto-mode state + active model override
 ```
@@ -328,7 +332,7 @@ fix the broken email validation
 refactor the auth middleware into its own module
 ```
 
-Claude intercepts any request that involves writing, editing, or fixing code and delegates it to Vibe transparently. Pure questions and conversations still go directly to Claude — only code tasks are delegated.
+Claude intercepts any request that involves writing, editing, or fixing code and delegates it transparently. Pure questions and conversations still go directly to Claude — only code tasks are delegated.
 
 ---
 
@@ -367,42 +371,41 @@ Claude Sonnet 4.6 eq: same tokens would cost ~$0.0168  (ratio x24.0)
 
 ```
 Claude Code  /  Codex CLI
-  └─ /vibe <instruction>  OR  /delegate <harness> <instruction>
+  └─ /vibe <instruction>
        └─ SKILL.md / CODEX-SKILL.md logic
             │
             ├─ Background workers (scheduler):
             │    ├─ delegate-audit    → read-only bug/smell scan, SOTA fixes valid findings
-            │    ├─ delegate-research → JINA web research (papers, CVEs, best practices)
+            │    ├─ delegate-research → JINA web search via jina-search (papers, CVEs, best practices)
             │    └─ delegate-reindex  → updates .delegate/knowledge.md
             │
-            └─ ~/tools/delegate <harness> <workdir> <prompt> [turns] [agent] [timeout]
+            └─ tools/delegate-chain <chain.yaml> <task>
                  ├─ delegate-rollback: git branch checkpoint (pre-run)
                  ├─ delegate-distill: inject .delegate/project-brief.md
                  ├─ delegate-reindex: inject .delegate/knowledge.md
                  ├─ delegate-contracts: run pre-conditions
                  │
-                 ├─ tools/adapters/codex    → codex exec --json -p <profile>  (default)
-                 ├─ tools/adapters/vibe     → script pseudo-TTY + vibe --output streaming
-                 ├─ tools/adapters/pi       → pi --mode json -p "prompt"
-                 └─ tools/adapters/opencode → opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"
+                 └─ tools/adapters/codex → codex exec --json -p <profile>
+                      ├─ minimax profile → MiniMax-M2.7 (implementor, writer)
+                      └─ glm profile    → GLM-5.1 (validator, reviewer)
                  │
-                 └─ shared post-run pipeline (all harnesses):
+                 └─ shared post-run pipeline:
                       ├─ delegate-contracts: run post-conditions
-                      ├─ delegate-check-duplicates: catch known harness bugs
+                      ├─ delegate-check-duplicates: catch known bugs
                       ├─ delegate-ast-check: semantic validation
                       ├─ syntax checks (.py, .js)
                       ├─ git diff --stat
-                      └─ JSONL log → ~/.local/share/delegate-runs.jsonl
+                      └─ JSONL log → .delegate/runs.jsonl
 ```
 
-**Reject-correct loop** — if the diff has fixable issues, Claude sends a correction back to the harness (max 2 rounds) rather than writing the fix itself. All code generation stays on cheap delegate tokens.
+**Reject-correct loop** — if the diff has fixable issues, Claude sends a correction back to the delegate (max 2 rounds) rather than writing the fix itself. All code generation stays on cheap delegate tokens.
 
-**Orchestrator vs harness distinction:**
+**Orchestrator vs delegate distinction:**
 
 | Role | Tools |
 |------|-------|
 | Orchestrators (review, route, write prompts, SOTA planning) | Claude Code, Codex CLI |
-| Delegate harnesses (write code cheaply) | Codex (default, via profiles), Vibe (Mistral), Pi, OpenCode |
+| Delegates (write code cheaply) | Codex with MiniMax or GLM profiles |
 
 ---
 
@@ -412,47 +415,45 @@ All tools live in `~/tools/` (symlinked from the repo's `tools/` directory).
 
 | Tool | Purpose |
 |------|---------|
-| `delegate` | Generic delegation entry point: `delegate <harness> <workdir> <prompt> [turns] [agent] [timeout]` |
+| `delegate` | Generic delegation entry point |
 | `vibe-delegate` | Backward-compat shim — calls `delegate vibe "$@"` |
+| `adapters/codex` | Codex CLI adapter: `codex exec --json -p <profile>` — default for all chains |
 | `adapters/vibe` | Vibe harness adapter (pseudo-TTY, JSON stream parser, token extraction) |
-| `adapters/pi` | Pi harness adapter: `pi --mode json -p "prompt"` |
-| `adapters/opencode` | OpenCode adapter: `opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"` |
-| `adapters/codex` | Codex CLI adapter: `codex exec --json -p <profile>` — used by all chains by default |
 | `delegate-rollback` | Git branch checkpoints: auto-created before each run, auto-cleaned on success, preserved on failure |
 | `delegate-reject` | Write a correction prompt for the reject-correct loop |
-| `delegate-correct` | Send a correction directly to the harness |
+| `delegate-correct` | Send a correction directly to the delegate |
 | `delegate-contracts` | Run pre/post conditions from `.delegate/contracts.yaml` |
 | `delegate-distill` | Generate `.delegate/project-brief.md` for context injection |
 | `delegate-failures` | Failure memory — record and query past failures |
 | `delegate-learnings` | Learning loop — capture correction patterns, suggest prompt improvements |
-| `delegate-router` | Recommend best harness based on run history and task type |
+| `delegate-router` | Recommend best model based on run history and task type |
 | `delegate-parallel` | Run tasks in parallel via git worktrees |
 | `delegate-ast-check` | AST-level semantic validation (shadowed vars, broken signatures, unused exports) |
-| `delegate-check-duplicates` | Detect duplicate function definitions and known harness regressions |
+| `delegate-check-duplicates` | Detect duplicate function definitions and known delegate regressions |
 | `delegate-batch` | Smart batching — groups bulk tasks by file |
-| `delegate-chain` | Multi-step delegation workflows: `delegate-chain <workdir> <chain.yaml>` |
+| `delegate-chain` | Multi-step delegation workflows: `delegate-chain <chain.yaml> <task>` |
 | `delegate-replay` | Step-by-step replay of recorded sessions for debugging |
 | `delegate-dashboard` | Live TUI dashboard (requires `rich`; falls back to plain text) |
 | `delegate-report` | Historical token/cost/failure report across all runs |
 | `delegate-reindex` | Build/update `.delegate/knowledge.md` (the project knowledge base) |
 | `delegate-audit` | Background read-only audit agent — finds bugs/smells, SOTA fixes valid ones |
 | `delegate-research` | Deep web research via JINA — papers, CVEs, best practices, alternatives |
+| `delegate-research-intake` | SOTA review of open research findings with graduate/defer/dismiss actions |
 | `delegate-scheduler` | Background scheduler for continuous audit, research, and knowledge updates |
+| `jina-search` | curl-based JINA web search; reads `JINA_API_KEY` from `.env` |
 
 ---
 
 ## Feature Overview
 
-### Multi-harness support
+### Harness
 
-Four delegate harnesses, same post-run pipeline:
+All pre-built chains use the Codex adapter:
 
 | Harness | Status | Invocation |
 |---------|--------|-----------|
 | `codex` | Active (default) | `codex exec --json -p <profile>` — used by all pre-built chains |
-| `vibe` | Active | Mistral Vibe CLI via pseudo-TTY, `--output streaming` |
-| `pi` | Stub | `pi --mode json -p "prompt"` |
-| `opencode` | Stub | `opencode run --format json --dir <workdir> --dangerously-skip-permissions "prompt"` |
+| `vibe` | Available | Mistral Vibe CLI via pseudo-TTY, `--output streaming` |
 
 ### Rollback checkpoints
 
@@ -498,7 +499,7 @@ Max 2 correction rounds before escalating. All code generation stays on cheap de
 
 ### Delegation chains
 
-`delegate-chain` runs multi-step workflows defined in `.delegate/chains/*.yaml`. Pre-built chains below. Each step passes its output to the next; chains abort on failure and roll back.
+`delegate-chain` runs multi-step workflows: `delegate-chain <chain.yaml> <task>`. Workdir defaults to cwd. Pre-built chains below. Each step passes its output to the next; chains abort on failure and roll back.
 
 | Command | Description |
 |---------|-------------|
@@ -541,13 +542,15 @@ SOTA writes the initial version. Cheap models keep it updated on subsequent runs
 
 ### Continuous research
 
-`/vibe-research scan` triggers a deep web research pass via JINA. It searches for:
+`/vibe-research scan` triggers a deep web research pass via JINA, using the `jina-search` tool (curl + `JINA_API_KEY` from `.env`). It searches for:
 - ArXiv papers relevant to your stack or domain
 - CVEs and security advisories for your dependencies
 - Best practices and updated idioms
 - Newer alternatives to libraries or patterns in use
 
 `/vibe-research` shows the accumulated findings from past scans.
+
+`/vibe-research-intake` is a SOTA-only review step. For each open finding you choose an action (`fix`, `refactor`, `doc`, `improve`, `ack`, `dismiss`, or `defer`) and record what you did. Deferred findings resurface automatically when their review date arrives.
 
 ### Scheduler
 
@@ -575,7 +578,7 @@ Tournament mode is also available as a building block: any chain step can includ
 
 ### Codex orchestrator
 
-`CODEX-SKILL.md` ports the orchestration logic so Codex CLI can act as the manager — decomposing tasks, delegating to Vibe/Pi/OpenCode, and reviewing diffs — with the same economic model as Claude Code.
+`CODEX-SKILL.md` ports the orchestration logic so Codex CLI can act as the manager — decomposing tasks, delegating to cheap models, and reviewing diffs — with the same economic model as Claude Code.
 
 Install into your project (does NOT overwrite existing `AGENTS.md`):
 ```bash

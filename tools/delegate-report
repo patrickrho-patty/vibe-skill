@@ -8,6 +8,8 @@ Usage:
 import json, sys, argparse
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from collections import defaultdict
 
 def get_log_path(workdir: str = '') -> Path:
@@ -22,7 +24,7 @@ def load_runs(since_days=None, project=None, workdir=''):
         sys.exit(0)
     cutoff = None
     if since_days:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+        cutoff = datetime.now(KST) - timedelta(days=since_days)
     runs = []
     for line in log.read_text().splitlines():
         line = line.strip()

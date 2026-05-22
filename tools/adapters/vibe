@@ -46,6 +46,7 @@ export DELEGATE_STATS_FILE="$STATS_FILE"
 
 timeout "$TIMEOUT_SECS" "${SCRIPT_CMD[@]}" | python3 -c "
 import sys, json, re, os, datetime
+_KST = datetime.timezone(datetime.timedelta(hours=9))
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfhilmnprsu]|\x1b\([AB]|\x0f|\x0e')
 tools_called = 0
@@ -59,7 +60,7 @@ session_dir = os.path.join(workdir, '.delegate', 'sessions')
 os.makedirs(session_dir, exist_ok=True)
 session_file = os.path.join(
     session_dir,
-    datetime.datetime.utcnow().strftime('%Y-%m-%dT%H-%M-%SZ') + '.jsonl'
+    datetime.datetime.now(_KST).strftime('%Y-%m-%dT%H-%M-%S+0900') + '.jsonl'
 )
 sf = open(session_file, 'w')
 

@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+KST = timezone(timedelta(hours=9))
+
 
 def sizeof_fmt(num):
     for unit in ('B', 'KB', 'MB', 'GB'):
@@ -154,9 +156,9 @@ def main():
         print(f"\n{prefix}Removed {stats['files']} file(s), freed {sizeof_fmt(stats['bytes'])}")
         return
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(KST) - timedelta(days=days)
     cutoff_ts = cutoff.timestamp()
-    cutoff_iso = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
+    cutoff_iso = cutoff.strftime('%Y-%m-%dT%H:%M:%S+09:00')
     print(f"{prefix}Cleaning artifacts older than {days} days (before {cutoff_iso[:10]})...\n")
 
     # Sessions

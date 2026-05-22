@@ -15,7 +15,8 @@ Codex does not use slash commands. Instead, interpret user intent directly:
 |-----------|--------|
 | `$vibe <mode>: <instruction>` | Run delegate-chain with the matching chain YAML |
 | `$vibe <instruction>` | Use the delegation gate to pick simple or steady mode |
-| `$vibe-scheduler run research` | `python3 .claude/vibe-skill/tools/delegate-scheduler run research` |
+| `$vibe-scheduler run research` | `python3 .claude/vibe-skill/tools/delegate-scheduler run research` (workdir defaults to cwd) |
+| `$vibe-research-intake` | `python3 .claude/vibe-skill/tools/delegate-research-intake pending` then graduate each |
 | `$vibe-scheduler start` | `python3 .claude/vibe-skill/tools/delegate-scheduler start` |
 | `$vibe-audit scan` | `python3 .claude/vibe-skill/tools/delegate-audit scan` |
 | `$vibe-research scan` | `python3 .claude/vibe-skill/tools/delegate-research scan` |

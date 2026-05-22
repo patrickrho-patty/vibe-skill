@@ -5,6 +5,8 @@ import json
 import sys
 import os
 from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from collections import defaultdict
 
 HARNESSES = ["vibe", "pi", "opencode"]
@@ -57,7 +59,7 @@ def load_runs(since_days: int = None, workdir: str = ''):
     runs = []
     cutoff = None
     if since_days is not None:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+        cutoff = datetime.now(KST) - timedelta(days=since_days)
 
     try:
         with open(runs_file, "r") as f:

@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+KST = timezone(timedelta(hours=9))
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DEFAULT_MODEL = 'minimax/MiniMax-M2.7'
@@ -520,7 +522,7 @@ def research_file(workdir: str, filepath: str, model: str, existing_findings: li
         return []
 
     # Build structured findings with IDs and timestamps
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    now = datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00')
     existing_ids = {f.get('id') for f in existing_findings}
     new_findings = []
 
@@ -701,7 +703,7 @@ def cmd_list(workdir: str, category: str = '', severity: str = ''):
 
 def cmd_apply(workdir: str, finding_id: str):
     """Mark a finding as applied."""
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    now = datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S+09:00')
     update_finding(workdir, finding_id, {'status': 'applied', 'applied_at': now})
     print(f"Finding '{finding_id}' marked as applied.")
 
@@ -714,7 +716,7 @@ def cmd_dismiss(workdir: str, finding_id: str):
 
 def cmd_prune(workdir: str):
     """Remove findings older than 30 days."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.now(KST) - timedelta(days=30)
     findings = load_findings(workdir)
     kept = []
     removed = 0
