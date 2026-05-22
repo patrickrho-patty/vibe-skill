@@ -207,11 +207,8 @@ def rich_watch(workdir: str, session_file: str):
 
 def main():
     args = sys.argv[1:]
-    if not args:
-        print(__doc__, file=sys.stderr)
-        sys.exit(1)
 
-    workdir = args[0]
+    workdir = args[0] if args and not args[0].startswith('--') else os.getcwd()
     session_file = ''
 
     i = 1
