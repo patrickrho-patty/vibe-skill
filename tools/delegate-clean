@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""
+delegate-clean — clean up delegation artifacts.
+
+Usage:
+  delegate-clean <workdir> [--days N] [--dry-run]
+  delegate-clean <workdir> --all
+
+Options:
+  --days N     Keep sessions/logs from the last N days (default: 7)
+  --dry-run    Show what would be deleted without deleting
+  --all        Remove everything (sessions, logs, findings, research, state files)
+"""
+import sys
+import os
+import json
+import time
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
+
+def sizeof_fmt(num):
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if abs(num) < 1024:
+            return f"{num:.1f} {unit}"
+        num /= 1024
+    return f"{num:.1f} TB"
+
+
+def clean_sessions(delegate_dir: Path, cutoff_ts: float, dry_run: bool) -> tuple:
+    sessions_dir = delegate_dir / 'sessions'
+    if not sessions_dir.exists():
+        return 0, 0
+    removed = 0
+    freed = 0
+    for f in sorted(sessions_dir.iterdir()):
+        if not f.name.endswith('.jsonl'):
+            continue
+        try:
+            mtime = f.stat().st_mtime
+            size = f.stat().st_size
+        except OSError:
+            continue
+        if mtime < cutoff_ts:
+            if dry_run:
+                print(f"  would delete: {f.name} ({sizeof_fmt(size)})")
+            else:
+                f.unlink()
+            removed += 1
+            freed += size
+    return removed, freed
+
+
+def clean_jsonl(filepath: Path, cutoff_iso: str, dry_run: bool) -> tuple:
+    if not filepath.exists():
+        return 0, 0
+    lines = filepath.read_text().strip().splitlines()
+    original = len(lines)
+    kept = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+            ts = entry.get('ts', '') or entry.get('timestamp', '')
+            if ts >= cutoff_iso:
+                kept.append(line)
+        except (json.JSONDecodeError, TypeError):
+            kept.append(line)
+    removed = original - len(kept)
+    if removed > 0 and not dry_run:
+        filepath.write_text('\n'.join(kept) + '\n' if kept else '')
+    return removed, original
+
+
+def clean_all(delegate_dir: Path, dry_run: bool) -> dict:
+    stats = {'files': 0, 'bytes': 0}
+    targets = [
+        'sessions',
+        'runs.jsonl',
+        'failures.jsonl',
+        'learnings.jsonl',
+        'research.jsonl',
+        'research-state.json',
+        'audit-findings.jsonl',
+        'knowledge-meta.json',
+        'scheduler-state.json',
+        'scheduler.log',
+        'web-research-raw.md',
+        'web-research-report.md',
+        'plan.md',
+        'delegate.pid',
+        'audit.pid',
+        'research.pid',
+        'scheduler.pid',
+    ]
+    for name in targets:
+        target = delegate_dir / name
+        if target.is_dir():
+            for f in target.iterdir():
+                try:
+                    size = f.stat().st_size
+                    if dry_run:
+                        print(f"  would delete: {name}/{f.name} ({sizeof_fmt(size)})")
+                    else:
+                        f.unlink()
+                    stats['files'] += 1
+                    stats['bytes'] += size
+                except OSError:
+                    continue
+        elif target.is_file():
+            try:
+                size = target.stat().st_size
+                if dry_run:
+                    print(f"  would delete: {name} ({sizeof_fmt(size)})")
+                else:
+                    target.unlink()
+                stats['files'] += 1
+                stats['bytes'] += size
+            except OSError:
+                continue
+    return stats
+
+
+def main():
+    args = sys.argv[1:]
+    workdir = args[0] if args and not args[0].startswith('--') else os.getcwd()
+    days = 7
+    dry_run = False
+    all_mode = False
+
+    i = 1 if args and not args[0].startswith('--') else 0
+    while i < len(args):
+        if args[i] == '--days' and i + 1 < len(args):
+            days = int(args[i + 1])
+            i += 2
+        elif args[i] == '--dry-run':
+            dry_run = True
+            i += 1
+        elif args[i] == '--all':
+            all_mode = True
+            i += 1
+        else:
+            i += 1
+
+    delegate_dir = Path(workdir) / '.delegate'
+    if not delegate_dir.exists():
+        print("No .delegate directory found.")
+        return
+
+    prefix = "[dry-run] " if dry_run else ""
+
+    if all_mode:
+        print(f"{prefix}Cleaning ALL delegation artifacts...")
+        stats = clean_all(delegate_dir, dry_run)
+        print(f"\n{prefix}Removed {stats['files']} file(s), freed {sizeof_fmt(stats['bytes'])}")
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_ts = cutoff.timestamp()
+    cutoff_iso = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(f"{prefix}Cleaning artifacts older than {days} days (before {cutoff_iso[:10]})...\n")
+
+    # Sessions
+    s_removed, s_freed = clean_sessions(delegate_dir, cutoff_ts, dry_run)
+    if s_removed:
+        print(f"  Sessions: {s_removed} removed, {sizeof_fmt(s_freed)} freed")
+
+    # JSONL logs
+    for name, label in [
+        ('runs.jsonl', 'Run log'),
+        ('failures.jsonl', 'Failure memory'),
+        ('learnings.jsonl', 'Learnings'),
+        ('research.jsonl', 'Research'),
+        ('audit-findings.jsonl', 'Audit findings'),
+    ]:
+        removed, total = clean_jsonl(delegate_dir / name, cutoff_iso, dry_run)
+        if removed:
+            print(f"  {label}: {removed}/{total} entries removed")
+
+    print(f"\n{prefix}Done.")
+
+
+if __name__ == '__main__':
+    main()
