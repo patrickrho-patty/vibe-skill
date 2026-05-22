@@ -82,15 +82,30 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
                         args = json.dumps(args)
 
                     if cmd:
-                        # Codex command_execution format
-                        short_cmd = cmd.split("'")[-2] if "'" in cmd else cmd
-                        if 'cat ' in cmd or 'head ' in cmd:
-                            target = short_cmd.split()[-1] if short_cmd.split() else cmd[:60]
-                            reads.append(f"[read] {os.path.basename(target)}")
-                        elif any(w in cmd for w in ['write', 'tee', '>']):
-                            edits.append(f"[write] {short_cmd[:60]}")
+                        # Codex command_execution: extract the inner command
+                        # Format: /bin/zsh -lc 'actual command here'
+                        import re
+                        inner = re.search(r"'(.+)'", cmd)
+                        display_cmd = inner.group(1) if inner else cmd
+                        display_short = display_cmd[:80]
+
+                        # Extract real file paths (must end in .py, .js, .ts, etc.)
+                        real_files = re.findall(r'[\w/.-]+\.(?:py|js|ts|tsx|jsx|go|rs|rb|sh|yaml|yml|json|md|toml|cfg)\b', display_cmd)
+                        for fp in real_files:
+                            files_touched.add(os.path.basename(fp))
+
+                        # Classify the command
+                        if any(r in display_cmd for r in ['cat ', 'head ', 'tail ', 'less ', 'sed -n']):
+                            target = os.path.basename(real_files[0]) if real_files else display_short
+                            reads.append(f"[read] {target}")
+                        elif any(w in display_cmd for w in ['python3 -c', 'tee ', '> ', 'cp ', 'mv ']):
+                            target = os.path.basename(real_files[-1]) if real_files else display_short
+                            edits.append(f"[write] {target}")
+                        elif 'grep' in display_cmd:
+                            edits.append(f"[grep] {display_short}")
                         else:
-                            edits.append(f"[cmd]  {short_cmd[:60]}")
+                            edits.append(f"[cmd]  {display_short}")
+
                     elif 'write' in name.lower() or 'edit' in name.lower():
                         try:
                             a = json.loads(args) if isinstance(args, str) else args
@@ -98,7 +113,7 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
                         except Exception:
                             fp = ''
                         if fp:
-                            files_touched.add(fp)
+                            files_touched.add(os.path.basename(fp))
                         edits.append(f"[edit] {fp or args[:60]}")
                     elif 'read' in name.lower():
                         reads.append(f"[read] {str(args)[:60]}")
@@ -111,14 +126,6 @@ def parse_session(session_file: str, workdir: str = '') -> dict:
                     output = str(item.get('output', ''))
                     if 'error' in output.lower() or 'failed' in output.lower():
                         warns += 1
-
-                # Track files from command_execution (cat/write targets)
-                if item_type == 'command_execution' and item.get('command', ''):
-                    cmd_str = item['command']
-                    # Extract file paths from common commands
-                    for part in cmd_str.split():
-                        if '/' in part and not part.startswith('-'):
-                            files_touched.add(os.path.basename(part))
 
                 elif item_type in ('message', 'text', 'agent_message'):
                     content = item.get('content', '') or item.get('text', '') or ''
