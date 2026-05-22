@@ -57,7 +57,7 @@ fi
 
 CODEX_CMD+=("$PROMPT_CONTENT")
 
-CODEX_STDERR=$(mktemp /tmp/codex-stderr-XXXXXX.log)
+CODEX_STDERR=$(mktemp /tmp/codex-stderr-XXXXXX)
 
 timeout "$TIMEOUT_SECS" "${CODEX_CMD[@]}" 2>"$CODEX_STDERR" | python3 -c "
 import sys, json, re, os, datetime

@@ -24,7 +24,7 @@ if [ ! -d "$WORKDIR" ]; then
 fi
 
 # Write correction prompt to a temp file for shell safety
-PROMPT_FILE=$(mktemp /tmp/delegate-correct-prompt-XXXXXX.txt)
+PROMPT_FILE=$(mktemp /tmp/delegate-correct-prompt-XXXXXX)
 printf '%s' "$CORRECTION_PROMPT" > "$PROMPT_FILE"
 trap 'rm -f "$PROMPT_FILE"' EXIT
 
@@ -35,7 +35,7 @@ echo "=== CORRECTION TURN (${HARNESS}, max ${MAX_TURNS} turns) ==="
 echo "Correction: ${CORRECTION_PROMPT:0:120}..."
 echo "=========================="
 
-DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX.json)
+DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX)
 printf '{}' > "$DELEGATE_STATS_FILE"
 export DELEGATE_STATS_FILE
 

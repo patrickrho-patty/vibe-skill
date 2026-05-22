@@ -32,7 +32,7 @@ PROMPT_CONTENT=$(cat "$PROMPT_FILE")
 
 export DELEGATE_STATS_FILE="$STATS_FILE"
 
-OC_STDERR=$(mktemp /tmp/opencode-stderr-XXXXXX.log)
+OC_STDERR=$(mktemp /tmp/opencode-stderr-XXXXXX)
 
 timeout "$TIMEOUT_SECS" opencode run \
   --format json \

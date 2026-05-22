@@ -41,7 +41,7 @@ if [ -n "$PI_MODEL_OVERRIDE" ]; then
   PI_CMD=(pi --mode json --model "$PI_MODEL_OVERRIDE" -p "$PROMPT_CONTENT")
 fi
 
-PI_STDERR=$(mktemp /tmp/pi-stderr-XXXXXX.log)
+PI_STDERR=$(mktemp /tmp/pi-stderr-XXXXXX)
 timeout "$TIMEOUT_SECS" "${PI_CMD[@]}" 2>"$PI_STDERR" | python3 -c "
 import sys, json, re, os, datetime
 

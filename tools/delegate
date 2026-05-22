@@ -95,14 +95,14 @@ echo "=========================="
 
 # Write prompt to a temp file — avoids shell injection when prompt contains
 # colons, quotes, emojis, accented chars, or multi-line Python/JS code.
-PROMPT_FILE=$(mktemp /tmp/delegate-prompt-XXXXXX.txt)
+PROMPT_FILE=$(mktemp /tmp/delegate-prompt-XXXXXX)
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
 # Prepend knowledge base and project brief to the prompt (context injection)
 KNOWLEDGE_FILE="$WORKDIR/.delegate/knowledge.md"
 BRIEF_FILE="$WORKDIR/.delegate/project-brief.md"
 if [ -f "$KNOWLEDGE_FILE" ] || [ -f "$BRIEF_FILE" ]; then
-  CONTEXT_FILE=$(mktemp /tmp/delegate-context-XXXXXX.txt)
+  CONTEXT_FILE=$(mktemp /tmp/delegate-context-XXXXXX)
   {
     [ -f "$KNOWLEDGE_FILE" ] && echo "--- CODEBASE KNOWLEDGE ---" && cat "$KNOWLEDGE_FILE" && echo ""
     [ -f "$BRIEF_FILE" ] && echo "--- PROJECT BRIEF ---" && cat "$BRIEF_FILE" && echo ""
@@ -113,7 +113,7 @@ if [ -f "$KNOWLEDGE_FILE" ] || [ -f "$BRIEF_FILE" ]; then
 fi
 
 # Stats handoff file: adapter writes JSON here; bash reads it for the log.
-DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX.json)
+DELEGATE_STATS_FILE=$(mktemp /tmp/delegate-stats-XXXXXX)
 printf '{}' > "$DELEGATE_STATS_FILE"
 export DELEGATE_STATS_FILE
 
@@ -165,7 +165,7 @@ while [ "$CORRECTION_ROUNDS" -lt "$MAX_CORRECTIONS" ] && [ -f "$CORRECTION_FILE"
   # Write correction to prompt file with context re-injection
   printf '%s' "$CORRECTION_PROMPT" > "$PROMPT_FILE"
   if [ -f "$KNOWLEDGE_FILE" ] || [ -f "$BRIEF_FILE" ]; then
-    CONTEXT_FILE=$(mktemp /tmp/delegate-context-XXXXXX.txt)
+    CONTEXT_FILE=$(mktemp /tmp/delegate-context-XXXXXX)
     {
       [ -f "$KNOWLEDGE_FILE" ] && echo "--- CODEBASE KNOWLEDGE ---" && cat "$KNOWLEDGE_FILE" && echo ""
       [ -f "$BRIEF_FILE" ] && echo "--- PROJECT BRIEF ---" && cat "$BRIEF_FILE" && echo ""
@@ -208,7 +208,7 @@ fi
 FILES_AFTER=$(git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
 CHANGED=$(comm -13 <(echo "$FILES_BEFORE" | sort) <(echo "$FILES_AFTER" | sort) 2>/dev/null)
 
-SYNTAX_COUNT_FILE=$(mktemp /tmp/delegate-syntax-count-XXXXXX.txt)
+SYNTAX_COUNT_FILE=$(mktemp /tmp/delegate-syntax-count-XXXXXX)
 echo 0 > "$SYNTAX_COUNT_FILE"
 export DELEGATE_CHANGED="$CHANGED"
 export SYNTAX_COUNT_FILE

@@ -17,7 +17,7 @@ STATS_FILE="${6:?Stats file required}"
 
 # Write the vibe command to a temp script.
 # Reads the prompt from the file to stay safe from shell expansion.
-VIBE_SCRIPT=$(mktemp /tmp/vibe-cmd-XXXXXX.sh)
+VIBE_SCRIPT=$(mktemp /tmp/vibe-cmd-XXXXXX)
 trap 'rm -f "$VIBE_SCRIPT"' EXIT
 
 {
