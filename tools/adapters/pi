@@ -31,9 +31,17 @@ PROMPT_CONTENT=$(cat "$PROMPT_FILE")
 
 export DELEGATE_STATS_FILE="$STATS_FILE"
 
+# Model override: PI_MODEL env var (set by delegate-chain per step) or DELEGATE_ACTIVE_MODEL
+PI_MODEL_OVERRIDE="${PI_MODEL:-$DELEGATE_ACTIVE_MODEL}"
+
 cd "$WORKDIR"
 
-timeout "$TIMEOUT_SECS" pi --mode json -p "$PROMPT_CONTENT" 2>/dev/null | python3 -c "
+PI_CMD=(pi --mode json -p "$PROMPT_CONTENT")
+if [ -n "$PI_MODEL_OVERRIDE" ]; then
+  PI_CMD=(pi --mode json --model "$PI_MODEL_OVERRIDE" -p "$PROMPT_CONTENT")
+fi
+
+timeout "$TIMEOUT_SECS" "${PI_CMD[@]}" 2>/dev/null | python3 -c "
 import sys, json, re, os, datetime
 
 tools_called = 0

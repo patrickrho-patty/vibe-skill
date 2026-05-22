@@ -89,6 +89,16 @@ def parse_chain(path):
             current_step['agent'] = m.group(1).strip().strip('"\'')
             continue
 
+        m = re.match(r'^\s+harness:\s*(.+)$', line)
+        if m:
+            current_step['harness'] = m.group(1).strip().strip('"\'')
+            continue
+
+        m = re.match(r'^\s+model:\s*(.+)$', line)
+        if m:
+            current_step['model'] = m.group(1).strip().strip('"\'')
+            continue
+
         m = re.match(r'^\s+turns:\s*(\d+)', line)
         if m:
             current_step['turns'] = int(m.group(1))
@@ -127,6 +137,8 @@ def run_step(step, workdir, task, harness, step_index, total_steps, git_context=
     agent = step.get('agent', '')
     turns = step.get('turns', 10)
     template = step.get('prompt_template', '{task}')
+    step_harness = step.get('harness', '')
+    step_model = step.get('model', '')
 
     # Substitute {task} placeholder
     prompt = template.replace('{task}', task)
@@ -135,21 +147,33 @@ def run_step(step, workdir, task, harness, step_index, total_steps, git_context=
     if git_context:
         prompt += f'\n\nContext from previous step (git diff --stat):\n{git_context}'
 
+    # Per-step harness override (from YAML) > env var > default
+    harness_name = step_harness or os.environ.get('DELEGATE_CHAIN_HARNESS', 'vibe')
+
     print(f'\n{"=" * 60}')
     print(f'CHAIN STEP {step_index + 1}/{total_steps}: {role}')
+    print(f'  Harness: {harness_name}')
+    print(f'  Model  : {step_model or "(default)"}')
     print(f'  Agent  : {agent or "default"}')
     print(f'  Turns  : {turns}')
     print(f'  Prompt : {prompt[:120]}...' if len(prompt) > 120 else f'  Prompt : {prompt}')
     print(f'{"=" * 60}')
 
+    # Set per-step model override via env var (adapters read this)
+    env = os.environ.copy()
+    if step_model:
+        env['DELEGATE_ACTIVE_MODEL'] = step_model
+        env['VIBE_ACTIVE_MODEL'] = step_model
+        # Pi uses --model flag; pass via env for the adapter to pick up
+        env['PI_MODEL'] = step_model
+
     # Build delegate command:
     # tools/delegate <harness-name> <workdir> <prompt> [max-turns] [agent]
-    harness_name = os.environ.get('DELEGATE_CHAIN_HARNESS', 'vibe')
     cmd = [harness, harness_name, workdir, prompt, str(turns)]
     if agent:
         cmd.append(agent)
 
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, env=env)
     return result.returncode
 
 

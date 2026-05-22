@@ -1,16 +1,15 @@
 name: cross-validate
-description: Same task sent to two harnesses, orchestrator picks the best result
+description: Same task sent to two models via Pi, orchestrator picks the best result
 
 steps:
   - role: implementor-a
-    harness: vibe
-    model: deepseek-flash
-    agent: default
+    harness: pi
+    model: minimax/MiniMax-M2.7
     turns: 10
     prompt_template: "Implement: {task}\n\nWrite minimal, correct code. Do not over-engineer."
 
   - role: implementor-b
-    harness: opencode
-    agent: default
+    harness: pi
+    model: zai/glm-5.1
     turns: 10
     prompt_template: "Implement: {task}\n\nWrite minimal, correct code. Do not over-engineer."

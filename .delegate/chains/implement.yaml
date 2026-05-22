@@ -1,19 +1,21 @@
-# implement.yaml — Plan, implement, validate
 name: implement
-description: Plan, implement, validate
+description: Plan, implement, validate — all via Pi
 
 steps:
   - role: planner
-    agent: code-architect
+    harness: pi
+    model: zai/glm-5.1
     turns: 5
-    prompt_template: "Analyze the codebase and create an implementation plan for: {task}"
+    prompt_template: "Analyze the codebase and create an implementation plan for: {task}\n\nList files to modify, approach, and risks. Do NOT write code."
 
   - role: implementor
-    agent: default
+    harness: pi
+    model: minimax/MiniMax-M2.7
     turns: 12
-    prompt_template: "Based on the plan, implement: {task}"
+    prompt_template: "Based on the plan, implement: {task}\n\nFollow existing conventions. Add all necessary imports."
 
   - role: validator
-    agent: code-reviewer
+    harness: pi
+    model: zai/glm-5.1
     turns: 3
-    prompt_template: "Review the changes made for: {task}. Check for bugs, missing imports, duplicate code."
+    prompt_template: "Review the changes made for: {task}. Check for bugs, missing imports, duplicate code. Report issues or say LGTM."

@@ -1,19 +1,21 @@
-# bugfix.yaml — Investigate, fix, validate
 name: bugfix
-description: Investigate, fix, validate
+description: Investigate, fix, validate — all via Pi
 
 steps:
   - role: investigator
-    agent: code-architect
+    harness: pi
+    model: zai/glm-5.1
     turns: 5
-    prompt_template: "Investigate the bug and identify the root cause for: {task}"
+    prompt_template: "Investigate the following bug. Read relevant files, identify the root cause, and explain what needs to change.\n\nBUG: {task}"
 
   - role: fixer
-    agent: default
+    harness: pi
+    model: minimax/MiniMax-M2.7
     turns: 10
-    prompt_template: "Fix the bug identified in the investigation for: {task}"
+    prompt_template: "Fix the following bug based on the investigation above.\n\nBUG: {task}\n\nApply the minimal fix. Do not refactor unrelated code."
 
   - role: validator
-    agent: code-reviewer
+    harness: pi
+    model: zai/glm-5.1
     turns: 3
-    prompt_template: "Review the bug fix for: {task}. Verify the fix is correct and does not introduce regressions."
+    prompt_template: "Review the fix for: {task}. Verify the root cause was addressed, no regressions were introduced, and imports are correct. Report issues or say LGTM."
