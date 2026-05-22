@@ -448,7 +448,19 @@ Max 2 correction rounds before escalating. All code generation stays on cheap de
 
 ### Delegation chains
 
-`delegate-chain` runs multi-step workflows defined in `.delegate/chains/*.yaml`. Pre-built chains: `implement`, `bugfix`. Each step passes its output to the next; chains abort on failure and roll back.
+`delegate-chain` runs multi-step workflows defined in `.delegate/chains/*.yaml`. Pre-built chains below. Each step passes its output to the next; chains abort on failure and roll back.
+
+```
+/vibe-mode steady     — think first, then build, then check
+/vibe-mode quick      — build it, get a second opinion
+/vibe-mode fix        — investigate, fix, validate
+/vibe-mode race       — two models compete, pick the winner
+/vibe-mode fortress   — the full gauntlet
+/vibe-mode ironclad   — fortress + final validation pass
+/vibe-mode simple     — just send it
+```
+
+Codex equivalents: `$vibe-mode steady`, `$vibe-mode quick`, etc. All chains use `harness: codex` with profiles `minimax` (MiniMax-M2.7) and `glm` (glm-5.1).
 
 ### Session replay
 

@@ -305,7 +305,7 @@ planner, implementor, validator, reviewer.
   ```
 - Each step gets the previous step's output as context
 - Chain aborts if any step fails (with rollback per F8)
-- Pre-built chains for common workflows: `implement`, `refactor`, `fix-bug`
+- Pre-built chains for common workflows: `steady`, `quick`, `fix`, `race`, `fortress`, `ironclad`
 
 **Open questions:**
 - YAML vs. TOML vs. just hardcoded chain templates?

@@ -647,29 +647,46 @@ Succeeded: 3/3
 
 ### Delegation chains
 
-Multi-step workflows where each step's output feeds the next. Built-in chains: `implement` (planner → implementor → validator) and `bugfix` (investigator → fixer → validator).
+Multi-step workflows where each step's output feeds the next. Select a chain with `/vibe-mode` (or `$vibe-mode` in Codex):
+
+```
+/vibe-mode steady     — think first, then build, then check       (plan → implement → validate)
+/vibe-mode quick      — build it, get a second opinion            (implement → review)
+/vibe-mode fix        — investigate, fix, validate                (investigate → fix → validate)
+/vibe-mode race       — two models compete, pick the winner
+/vibe-mode fortress   — the full gauntlet                         (plan → implement → test → security)
+/vibe-mode ironclad   — fortress + final validation pass          (plan → implement → test → security → final review)
+/vibe-mode simple     — just send it
+```
+
+All chains use `harness: codex` with profiles `minimax` (MiniMax-M2.7) and `glm` (glm-5.1).
 
 ```bash
 # Use a pre-built chain with DELEGATE_CHAIN_TASK env var:
 DELEGATE_CHAIN_TASK="add user authentication" \
-  ~/tools/delegate-chain /path/to/project .delegate/chains/implement.yaml
+  ~/tools/delegate-chain /path/to/project .delegate/chains/steady.yaml
 
 # Or pass the task as an argument:
-~/tools/delegate-chain /path/to/project .delegate/chains/bugfix.yaml vibe "fix the broken login redirect"
+~/tools/delegate-chain /path/to/project .delegate/chains/fix.yaml codex "fix the broken login redirect"
 ```
 
 **Available built-in chains:**
 
 | Chain file | Steps |
 |------------|-------|
-| `.delegate/chains/implement.yaml` | planner → implementor → validator |
-| `.delegate/chains/bugfix.yaml` | investigator → fixer → validator |
+| `.delegate/chains/steady.yaml` | plan → implement → validate |
+| `.delegate/chains/quick.yaml` | implement → review |
+| `.delegate/chains/fix.yaml` | investigate → fix → validate |
+| `.delegate/chains/race.yaml` | two models compete on same task |
+| `.delegate/chains/fortress.yaml` | plan → implement → test → security |
+| `.delegate/chains/ironclad.yaml` | plan → implement → test → security → final review |
 
 **Example chain file format:**
 
 ```yaml
-name: implement
-description: Plan, implement, then validate
+name: steady
+description: Think first, then build, then check
+harness: codex
 
 steps:
   - role: planner
@@ -692,7 +709,7 @@ steps:
 
 ```
 ############################################################
-# DELEGATE CHAIN: implement
+# DELEGATE CHAIN: steady
 # Task          : add user authentication
 # Steps         : 3
 ############################################################
@@ -704,7 +721,7 @@ CHAIN STEP 1/3: planner
 ...
 
 ============================================================
-CHAIN SUMMARY: implement
+CHAIN SUMMARY: steady
   Total duration : 187.3s
   Status         : SUCCESS
 
