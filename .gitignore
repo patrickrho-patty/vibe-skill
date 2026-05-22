@@ -22,3 +22,5 @@
 .delegate/scheduler.log
 .delegate/plan.md
 .delegate/research-state.json
+.delegate/web-research-raw.md
+.delegate/web-research-report.md

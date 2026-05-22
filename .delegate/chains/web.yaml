@@ -1,0 +1,30 @@
+name: web
+description: SOTA decomposes topic → 4 agents search in parallel → GLM aggregates
+
+steps:
+  - role: decomposer
+    sota: true
+    prompt_template: "Decompose this research topic into 3-4 specific, searchable subtopics.\n\nTOPIC: {task}\n\nFor each subtopic, write a focused search query that would find the most relevant, recent (2025-2026) information. Think about: what are the key dimensions of this topic? What related areas should we explore? What specific questions need answers?\n\nWrite your output as a simple list to .delegate/plan.md:\nSubtopic 1: <search query 1>\nSubtopic 2: <search query 2>\nSubtopic 3: <search query 3>\nSubtopic 4: <search query 4>"
+
+  - role: researcher
+    prompt_template: "Search the web for information on: {task}\n\nUse JINA web search to find relevant results. For each subtopic in the plan, search thoroughly and collect key findings with source URLs.\n\nPLAN:\n{plan}\n\nFor EACH subtopic listed in the plan:\n1. Search using the query provided\n2. Read the top 2-3 results in depth\n3. Extract key facts, data points, and recommendations\n4. Note the source URL for every claim\n\nWrite ALL findings to a file at .delegate/web-research-raw.md organized by subtopic."
+    parallel:
+      workers:
+        - harness: codex
+          model: minimax/MiniMax-M2.7
+        - harness: codex
+          model: minimax/MiniMax-M2.7
+        - harness: codex
+          model: glm/glm-5.1
+        - harness: codex
+          model: glm/glm-5.1
+      judge:
+        harness: codex
+        model: glm/glm-5.1
+    turns: 0
+
+  - role: aggregator
+    harness: codex
+    model: glm/glm-5.1
+    turns: 0
+    prompt_template: "Aggregate and organize web research results.\n\nORIGINAL TOPIC: {task}\n\nSUBTOPICS RESEARCHED:\n{plan}\n\nRead the raw research file at .delegate/web-research-raw.md and produce a clean, organized summary.\n\nWrite the final report to .delegate/web-research-report.md with:\n\n## Summary\n[2-3 sentence executive summary]\n\n## Key Findings\n[Organized by subtopic, deduplicated, with source citations]\n\n## Recommendations\n[Actionable takeaways based on the research]\n\n## Sources\n[All URLs cited, grouped by subtopic]\n\nRULES:\n- Remove duplicate information (same fact from multiple workers)\n- Keep the most detailed/authoritative version of each finding\n- Every claim must have a source URL\n- Be concise but complete\n- Format for easy consumption by a senior engineer"

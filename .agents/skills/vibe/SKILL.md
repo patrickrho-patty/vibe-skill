@@ -39,6 +39,7 @@ MODES (inline or persistent via /vibe-mode)
   tournament  4 models race, GLM judges the winner
   race        2 models compete on same task
   docs        SOTA outlines → write documentation → review
+  web         SOTA decomposes topic → 4 agents search → GLM aggregates
 
 COMMANDS
   /vibe <instruction>                    Delegate a coding task
@@ -62,6 +63,7 @@ EXAMPLES
   /vibe fix: the email validation is broken
   /vibe docs: write API documentation
   /vibe tournament: implement search
+  /vibe web: latest quantization techniques for LLMs
   /vibe-mode ironclad
   /vibe-scheduler start
 ```
