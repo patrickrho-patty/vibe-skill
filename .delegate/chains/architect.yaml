@@ -4,7 +4,7 @@ description: SOTA plans, cheap models execute, SOTA validates at the end
 steps:
   - role: planner
     sota: true
-    prompt_template: "Write a detailed implementation plan for: {task}"
+    prompt_template: "Write a step-by-step implementation plan for: {task}\n\nThe downstream agent is a cheap model that needs EXPLICIT instructions. Your plan must include:\n- Exact file paths to create or modify\n- Exact function/class/variable names\n- Code patterns or snippets where the pattern matters\n- Numbered step-by-step sequence\n- What NOT to change (constraints)\n- Verification steps (grep commands to confirm each change)\n\nBe specific enough that a junior developer could follow it without asking questions."
 
   - role: implementor
     harness: codex

@@ -4,7 +4,7 @@ description: SOTA investigates, MiniMax fixes, GLM validates
 steps:
   - role: investigator
     sota: true
-    prompt_template: "Investigate this bug. Read relevant files, identify the root cause, and write a fix plan with exact file/line changes needed.\n\nBUG: {task}"
+    prompt_template: "Investigate this bug and write a detailed fix plan.\n\nBUG: {task}\n\nRead the relevant files, identify the root cause, then write a step-by-step fix plan with:\n- The root cause (exact file, line, and what is wrong)\n- Exact changes needed (file path, function name, what to change and what to change it to)\n- What NOT to touch\n- How to verify the fix (grep or test command)\n\nThe fix will be executed by a cheap model — be explicit and unambiguous."
 
   - role: fixer
     harness: codex

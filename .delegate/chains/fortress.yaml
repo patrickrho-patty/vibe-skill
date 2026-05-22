@@ -4,7 +4,7 @@ description: SOTA plans, MiniMax implements, GLM tests, MiniMax security reviews
 steps:
   - role: planner
     sota: true
-    prompt_template: "Analyze the codebase and create a detailed plan for: {task}\n\nList files to modify, the approach, risks, and security considerations. Do NOT write code."
+    prompt_template: "Analyze the codebase and write a step-by-step plan for: {task}\n\nThe downstream agents are cheap models that need EXPLICIT instructions. Include:\n- Exact file paths to create or modify\n- Exact function/class/variable names and signatures\n- Security considerations for each change\n- Numbered step-by-step sequence\n- What NOT to change (constraints)\n- Verification steps\n\nBe specific enough that a junior developer could follow it without asking questions."
 
   - role: implementor
     harness: codex

@@ -208,18 +208,55 @@ When a chain has a step with `sota: true`, that step is **skipped by the chain
 script** — the orchestrator (you, Claude/Codex) handles it directly:
 
 1. Read the step's `prompt_template`, substitute `{task}` with the user's instruction
-2. **Think about it yourself** — write a detailed implementation plan
-3. Write the plan to `.delegate/plan.md`:
+2. Read the relevant source files to understand the current state
+3. **Write a DETAILED, step-by-step plan** — not a high-level overview
+
+**Critical: cheap models need explicit instructions.** The plan must be detailed
+enough that a junior developer could follow it without asking questions. Include:
+
+- **Exact file paths** to create or modify
+- **Exact function/class names** to add, change, or remove
+- **Code patterns** to follow (show a snippet if the pattern matters)
+- **Step-by-step sequence** — numbered, ordered, unambiguous
+- **What NOT to do** — constraints, things to leave alone
+- **Verification** — how to confirm each step worked
+
+**Bad plan (too vague — cheap model will guess wrong):**
+```
+Add authentication to the API. Use JWT tokens. Protect the routes.
+```
+
+**Good plan (cheap model can execute precisely):**
+```
+1. Create src/auth/jwt.py:
+   - Function `create_token(user_id: str) -> str` using PyJWT, HS256, 24h expiry
+   - Function `verify_token(token: str) -> dict` returning payload or raising HTTPException(401)
+   - Secret key from os.environ["JWT_SECRET"]
+
+2. Modify src/routes/api.py:
+   - Add `from src.auth.jwt import verify_token`
+   - Create decorator `@require_auth` that extracts Bearer token from Authorization header
+   - Apply `@require_auth` to: get_user(), update_user(), delete_user()
+   - Do NOT apply to: login(), register(), health_check()
+
+3. Modify src/routes/auth.py:
+   - In login() after password verification, call create_token(user.id)
+   - Return {"token": token, "user_id": user.id}
+
+4. Verify: grep for "require_auth" in api.py — should appear 3 times
+```
+
+4. Write the plan to `.delegate/plan.md`:
    ```bash
    mkdir -p .delegate && cat > .delegate/plan.md << 'PLAN'
-   [your plan here]
+   [your detailed plan here]
    PLAN
    ```
-4. Then run the chain: `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" "<chain-yaml>"`
-5. The chain reads `.delegate/plan.md` and injects it as `{plan}` into subsequent steps
+5. Then run the chain: `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" "<chain-yaml>"`
+6. The chain reads `.delegate/plan.md` and injects it as `{plan}` into subsequent steps
 
-The `architect` mode does exactly this: you plan, MiniMax implements your plan,
-GLM validates against your plan. Your architectural decisions drive everything.
+The `architect` mode does exactly this: you plan in detail, MiniMax follows your
+instructions precisely, GLM validates against your plan.
 
 ---
 
