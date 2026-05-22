@@ -110,6 +110,7 @@ def run_textual_app(workdir: str, session_file: str):
     from textual.widgets import Header, Footer, Static, RichLog
     from textual.containers import VerticalScroll
     from textual import work
+    from rich.markdown import Markdown as RichMarkdown
 
     project = os.path.basename(os.path.abspath(workdir))
 
@@ -240,7 +241,7 @@ def run_textual_app(workdir: str, session_file: str):
                 elif etype == 'message':
                     self._flush_tools()
                     log.write("")
-                    log.write(etext)
+                    log.write(RichMarkdown(etext))
                     log.write("")
                 elif etype == 'thinking':
                     self._flush_tools()
