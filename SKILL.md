@@ -36,7 +36,7 @@ Model: <alias>  (override)  OR  Model: deepseek-flash  (config default)
 
 ## /vibe-report
 
-If the user invokes `/vibe-report`, run `~/tools/delegate-report` with any flags
+If the user invokes `/vibe-report`, run `.claude/vibe-skill/tools/delegate-report` with any flags
 extracted from the arguments, display output verbatim, and stop.
 
 | User says | Flag |
@@ -78,10 +78,10 @@ Run the bash command, print one confirmation line showing the active model, and 
 |---------|--------|
 | `/vibe <instruction>` | Delegate to Vibe (default harness) |
 | `/delegate <harness> <instruction>` | Delegate to specific harness (vibe, pi, opencode) |
-| `/delegate-dashboard` | Show live TUI dashboard: `~/tools/delegate-dashboard` |
-| `/delegate-batch <prompt>` | Smart batch: `~/tools/delegate-batch "$WORKDIR" "<prompt>"` |
-| `/delegate-chain <chain>` | Run chain: `~/tools/delegate-chain "$WORKDIR" ".delegate/chains/<chain>.yaml"` |
-| `/delegate-route <description>` | Recommend harness: `~/tools/delegate-router recommend "<desc>"` |
+| `/delegate-dashboard` | Show live TUI dashboard: `.claude/vibe-skill/tools/delegate-dashboard` |
+| `/delegate-batch <prompt>` | Smart batch: `.claude/vibe-skill/tools/delegate-batch "$WORKDIR" "<prompt>"` |
+| `/delegate-chain <chain>` | Run chain: `.claude/vibe-skill/tools/delegate-chain "$WORKDIR" ".delegate/chains/<chain>.yaml"` |
+| `/delegate-route <description>` | Recommend harness: `.claude/vibe-skill/tools/delegate-router recommend "<desc>"` |
 
 **Harness selection:** Use `/delegate-route` to check which harness is best for
 a task, or pick manually. Default is `vibe` until routing data accumulates.
@@ -286,7 +286,7 @@ VERIFY: grep for "datetime.date" in app.py and confirm it appears in fetch_data.
 ## Step 4 — Launch Delegation
 
 ```bash
-~/tools/delegate <harness> "<workdir>" "<prompt>" [max-turns] [agent] [timeout-secs]
+.claude/vibe-skill/tools/delegate <harness> "<workdir>" "<prompt>" [max-turns] [agent] [timeout-secs]
 ```
 
 | Argument       | Default  | Notes                                           |
@@ -302,7 +302,7 @@ The script automatically: creates a rollback checkpoint, injects the project bri
 (if `.delegate/project-brief.md` exists), runs pre-contracts, allocates a pseudo-TTY
 (vibe-specific), runs post-contracts, checks for duplicates, and logs to JSONL.
 
-**Backward compat:** `~/tools/vibe-delegate` still works (shim to `delegate vibe`).
+**Backward compat:** `.claude/vibe-skill/tools/vibe-delegate` still works (shim to `delegate vibe`).
 
 **Available agents:**
 
@@ -321,7 +321,7 @@ The script automatically: creates a rollback checkpoint, injects the project bri
 
 **Background launch:**
 ```bash
-~/tools/vibe-delegate "<workdir>" "<prompt>" 10 > /tmp/vibe_out.txt 2>&1 &
+.claude/vibe-skill/tools/vibe-delegate "<workdir>" "<prompt>" 10 > /tmp/vibe_out.txt 2>&1 &
 # Monitor with: tail -f /tmp/vibe_out.txt
 ```
 
@@ -404,20 +404,20 @@ After the delegate finishes, classify the result:
 
 **To send a correction back:**
 ```bash
-~/tools/delegate-reject "$WORKDIR" "The import on line 3 is wrong. Change from utils import foo to from app.utils import foo. Do not touch anything else."
+.claude/vibe-skill/tools/delegate-reject "$WORKDIR" "The import on line 3 is wrong. Change from utils import foo to from app.utils import foo. Do not touch anything else."
 ```
-Then re-run `~/tools/delegate <harness> "$WORKDIR" "<original-prompt>"` — the
+Then re-run `.claude/vibe-skill/tools/delegate <harness> "$WORKDIR" "<original-prompt>"` — the
 correction file is picked up automatically (max 2 correction rounds).
 
 **Rollback if needed:**
 ```bash
-~/tools/delegate-rollback rollback "$WORKDIR" "<checkpoint-branch>"
+.claude/vibe-skill/tools/delegate-rollback rollback "$WORKDIR" "<checkpoint-branch>"
 ```
 
 - **Max 2 correction rounds** before escalating to `reject-retry` or `reject-abort`.
 - Between rounds, **read the git diff** to avoid doubling partial work.
 - If all correction rounds fail, escalate to the user — do NOT fix it yourself.
-- Record failures: `~/tools/delegate-failures record "$WORKDIR" vibe <error_type> "<symptom>" "<fix>"`
+- Record failures: `.claude/vibe-skill/tools/delegate-failures record "$WORKDIR" vibe <error_type> "<symptom>" "<fix>"`
 
 ## Step 6b — Log manual completion (legacy)
 
@@ -545,13 +545,13 @@ Every run appends one JSON entry to `~/.local/share/delegate-runs.jsonl`.
 | `search_replace_fails`| int     | Number of `search_replace [FAIL]` events             |
 | `wrote_nothing`       | bool    | `true` if Vibe ran ≥3 tool calls but changed 0 files |
 
-**Report script — `~/tools/delegate-report`:**
+**Report script — `.claude/vibe-skill/tools/delegate-report`:**
 
 ```bash
-~/tools/delegate-report                  # full report (all time)
-~/tools/delegate-report --since 7        # last 7 days
-~/tools/delegate-report --project myapp  # filter by project
-~/tools/delegate-report --fails          # failures and issues only
+.claude/vibe-skill/tools/delegate-report                  # full report (all time)
+.claude/vibe-skill/tools/delegate-report --since 7        # last 7 days
+.claude/vibe-skill/tools/delegate-report --project myapp  # filter by project
+.claude/vibe-skill/tools/delegate-report --fails          # failures and issues only
 ```
 
 Or via Claude Code: `/vibe-report [args]`
@@ -588,27 +588,27 @@ jq 'select(.search_replace_fails > 0)' ~/.local/share/delegate-runs.jsonl
 
 | Tool | Purpose |
 |------|---------|
-| `~/tools/delegate` | Generic delegation entry point |
-| `~/tools/adapters/vibe` | Vibe harness adapter |
-| `~/tools/adapters/pi` | Pi adapter (stub) |
-| `~/tools/adapters/opencode` | OpenCode adapter (stub) |
-| `~/tools/delegate-rollback` | Git branch checkpoint management |
-| `~/tools/delegate-reject` | Write correction prompt for reject-correct |
-| `~/tools/delegate-correct` | Send correction to harness directly |
-| `~/tools/delegate-contracts` | Run pre/post condition checks |
-| `~/tools/delegate-check-duplicates` | Detect duplicate code and regressions |
-| `~/tools/delegate-ast-check` | AST-level semantic validation |
-| `~/tools/delegate-failures` | Failure memory — record and query |
-| `~/tools/delegate-learnings` | Learning loop — capture correction patterns |
-| `~/tools/delegate-router` | Recommend harness based on run history |
-| `~/tools/delegate-parallel` | Run tasks in parallel via git worktrees |
-| `~/tools/delegate-batch` | Smart batching for bulk tasks |
-| `~/tools/delegate-chain` | Multi-step delegation workflows |
-| `~/tools/delegate-replay` | Replay recorded delegation sessions |
-| `~/tools/delegate-dashboard` | Live TUI dashboard |
-| `~/tools/delegate-distill` | Generate project brief for context injection |
-| `~/tools/delegate-report` | Historical token/cost/failure report |
-| `~/tools/vibe-delegate` | Backward-compat shim → `delegate vibe` |
+| `.claude/vibe-skill/tools/delegate` | Generic delegation entry point |
+| `.claude/vibe-skill/tools/adapters/vibe` | Vibe harness adapter |
+| `.claude/vibe-skill/tools/adapters/pi` | Pi adapter (stub) |
+| `.claude/vibe-skill/tools/adapters/opencode` | OpenCode adapter (stub) |
+| `.claude/vibe-skill/tools/delegate-rollback` | Git branch checkpoint management |
+| `.claude/vibe-skill/tools/delegate-reject` | Write correction prompt for reject-correct |
+| `.claude/vibe-skill/tools/delegate-correct` | Send correction to harness directly |
+| `.claude/vibe-skill/tools/delegate-contracts` | Run pre/post condition checks |
+| `.claude/vibe-skill/tools/delegate-check-duplicates` | Detect duplicate code and regressions |
+| `.claude/vibe-skill/tools/delegate-ast-check` | AST-level semantic validation |
+| `.claude/vibe-skill/tools/delegate-failures` | Failure memory — record and query |
+| `.claude/vibe-skill/tools/delegate-learnings` | Learning loop — capture correction patterns |
+| `.claude/vibe-skill/tools/delegate-router` | Recommend harness based on run history |
+| `.claude/vibe-skill/tools/delegate-parallel` | Run tasks in parallel via git worktrees |
+| `.claude/vibe-skill/tools/delegate-batch` | Smart batching for bulk tasks |
+| `.claude/vibe-skill/tools/delegate-chain` | Multi-step delegation workflows |
+| `.claude/vibe-skill/tools/delegate-replay` | Replay recorded delegation sessions |
+| `.claude/vibe-skill/tools/delegate-dashboard` | Live TUI dashboard |
+| `.claude/vibe-skill/tools/delegate-distill` | Generate project brief for context injection |
+| `.claude/vibe-skill/tools/delegate-report` | Historical token/cost/failure report |
+| `.claude/vibe-skill/tools/vibe-delegate` | Backward-compat shim → `delegate vibe` |
 
 ---
 

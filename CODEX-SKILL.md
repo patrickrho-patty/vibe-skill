@@ -1,7 +1,7 @@
 # Codex Orchestrator — Delegation Instructions
 
 This file contains orchestration instructions for **Codex CLI acting as the orchestrator**.
-The delegates (Vibe, Pi, OpenCode) are invoked via `~/tools/delegate`, which is
+The delegates (Vibe, Pi, OpenCode) are invoked via `.claude/vibe-skill/tools/delegate`, which is
 harness-agnostic. Codex itself does not code — it decomposes, delegates, supervises,
 and reports.
 
@@ -16,9 +16,9 @@ Codex does not use slash commands. Instead, interpret user intent directly:
 | "delegate X to vibe" | Run Step 1–7 below with harness=vibe |
 | "delegate X to pi" | Run Step 1–7 below with harness=pi |
 | "delegate X to opencode" | Run Step 1–7 below with harness=opencode |
-| "show me the delegate report" | Run `~/tools/delegate-report` |
-| "show failures" | Run `~/tools/delegate-report --fails` |
-| "show dashboard" | Run `~/tools/delegate-dashboard` |
+| "show me the delegate report" | Run `.claude/vibe-skill/tools/delegate-report` |
+| "show failures" | Run `.claude/vibe-skill/tools/delegate-report --fails` |
+| "show dashboard" | Run `.claude/vibe-skill/tools/delegate-dashboard` |
 | "turn on auto-delegate" | `touch ~/.local/share/vibe-auto.flag` |
 | "turn off auto-delegate" | `rm -f ~/.local/share/vibe-auto.flag` |
 | "set model to X" | `echo X > ~/.local/share/delegate-model.flag` |
@@ -30,8 +30,8 @@ Codex does not use slash commands. Instead, interpret user intent directly:
 
 Codex runs in a sandboxed environment. The following apply:
 
-- **Filesystem access**: `~/tools/delegate` and adapters require read/write/exec access
-  to `~/tools/`, `~/.local/share/`, and the project workdir. Ensure these paths are
+- **Filesystem access**: `.claude/vibe-skill/tools/delegate` and adapters require read/write/exec access
+  to `.claude/vibe-skill/tools/`, `~/.local/share/`, and the project workdir. Ensure these paths are
   accessible before delegating.
 - **Network**: delegate scripts invoke external APIs (Vibe, Pi, OpenCode) — network must
   be allowed.
@@ -141,7 +141,7 @@ VERIFY: grep for "datetime.date" in app.py and confirm it appears in fetch_data.
 ## Step 4 — Launch the Delegate
 
 ```bash
-~/tools/delegate <harness> "<workdir>" "<prompt>" [max-turns] [agent] [timeout-secs]
+.claude/vibe-skill/tools/delegate <harness> "<workdir>" "<prompt>" [max-turns] [agent] [timeout-secs]
 ```
 
 | Argument | Default | Notes |
@@ -342,7 +342,7 @@ Real token counts and cost are printed after every run and appended to:
 
 ## Run Log Fields
 
-Every `~/tools/delegate` run appends one JSON entry to
+Every `.claude/vibe-skill/tools/delegate` run appends one JSON entry to
 `~/.local/share/delegate-runs.jsonl`.
 
 | Field | Type | Description |
@@ -376,14 +376,14 @@ Every `~/tools/delegate` run appends one JSON entry to
 ## Reporting Tools
 
 ```bash
-~/tools/delegate-report                  # full report (all time)
-~/tools/delegate-report --since 7        # last 7 days
-~/tools/delegate-report --project myapp  # filter by project
-~/tools/delegate-report --fails          # failures and issues only
+.claude/vibe-skill/tools/delegate-report                  # full report (all time)
+.claude/vibe-skill/tools/delegate-report --since 7        # last 7 days
+.claude/vibe-skill/tools/delegate-report --project myapp  # filter by project
+.claude/vibe-skill/tools/delegate-report --fails          # failures and issues only
 
-~/tools/delegate-dashboard               # one-shot dashboard (plain text or rich TUI)
-~/tools/delegate-dashboard --refresh 10  # auto-refresh every 10 seconds
-~/tools/delegate-dashboard --project foo # filter by project
+.claude/vibe-skill/tools/delegate-dashboard               # one-shot dashboard (plain text or rich TUI)
+.claude/vibe-skill/tools/delegate-dashboard --refresh 10  # auto-refresh every 10 seconds
+.claude/vibe-skill/tools/delegate-dashboard --project foo # filter by project
 ```
 
 **Raw jq queries:**

@@ -155,118 +155,60 @@ Mitigation: grep for the exact target before constructing the SEARCH block; phra
 
 ## Installation
 
-```bash
-git clone https://github.com/pcx-wave/vibe-skill.git && cd vibe-skill && \
-mkdir -p ~/tools \
-  ~/.claude/skills/vibe \
-  ~/.claude/skills/vibeon \
-  ~/.claude/skills/vibeoff \
-  ~/.claude/skills/vibestatus \
-  ~/.claude/skills/vibe-model-pick \
-  ~/.claude/skills/vibe-model-clear \
-  ~/.claude/skills/vibe-report && \
-ln -sf "$(pwd)/tools/delegate"              ~/tools/delegate && \
-ln -sf "$(pwd)/tools/vibe-delegate"         ~/tools/vibe-delegate && \
-ln -sf "$(pwd)/tools/delegate-report"       ~/tools/delegate-report && \
-ln -sf "$(pwd)/tools/delegate-rollback"     ~/tools/delegate-rollback && \
-ln -sf "$(pwd)/tools/delegate-reject"       ~/tools/delegate-reject && \
-ln -sf "$(pwd)/tools/delegate-contracts"    ~/tools/delegate-contracts && \
-ln -sf "$(pwd)/tools/delegate-distill"      ~/tools/delegate-distill && \
-ln -sf "$(pwd)/tools/delegate-failures"     ~/tools/delegate-failures && \
-ln -sf "$(pwd)/tools/delegate-learnings"    ~/tools/delegate-learnings && \
-ln -sf "$(pwd)/tools/delegate-router"       ~/tools/delegate-router && \
-ln -sf "$(pwd)/tools/delegate-parallel"     ~/tools/delegate-parallel && \
-ln -sf "$(pwd)/tools/delegate-ast-check"    ~/tools/delegate-ast-check && \
-ln -sf "$(pwd)/tools/delegate-check-duplicates" ~/tools/delegate-check-duplicates && \
-ln -sf "$(pwd)/tools/delegate-batch"        ~/tools/delegate-batch && \
-ln -sf "$(pwd)/tools/delegate-chain"        ~/tools/delegate-chain && \
-ln -sf "$(pwd)/tools/delegate-replay"       ~/tools/delegate-replay && \
-ln -sf "$(pwd)/tools/delegate-dashboard"    ~/tools/delegate-dashboard && \
-chmod +x ~/tools/delegate ~/tools/vibe-delegate ~/tools/delegate-report && \
-ln -sf "$(pwd)/SKILL.md"           ~/.claude/skills/vibe/SKILL.md && \
-ln -sf "$(pwd)/VIBEON.md"          ~/.claude/skills/vibeon/SKILL.md && \
-ln -sf "$(pwd)/VIBEOFF.md"         ~/.claude/skills/vibeoff/SKILL.md && \
-ln -sf "$(pwd)/VIBESTATUS.md"      ~/.claude/skills/vibestatus/SKILL.md && \
-ln -sf "$(pwd)/VIBE-MODEL-PICK.md" ~/.claude/skills/vibe-model-pick/SKILL.md && \
-ln -sf "$(pwd)/VIBE-MODEL-CLEAR.md" ~/.claude/skills/vibe-model-clear/SKILL.md && \
-ln -sf "$(pwd)/VIBE-REPORT.md"     ~/.claude/skills/vibe-report/SKILL.md
-```
+Install per-project — tools and skills live inside `<your-project>/.claude/vibe-skill/`.
 
-### Step-by-step
+### Quick install (one command)
 
 ```bash
-# 1. Clone this repo
-git clone https://github.com/pcx-wave/vibe-skill.git
-cd vibe-skill
-
-# 2. Install core scripts (symlinks — stay in sync with git pull)
-mkdir -p ~/tools
-ln -sf "$(pwd)/tools/delegate"           ~/tools/delegate
-ln -sf "$(pwd)/tools/vibe-delegate"      ~/tools/vibe-delegate   # backward-compat shim
-ln -sf "$(pwd)/tools/delegate-report"    ~/tools/delegate-report
-chmod +x ~/tools/delegate ~/tools/vibe-delegate ~/tools/delegate-report
-
-# 3. Install advanced tools (optional but recommended)
-ln -sf "$(pwd)/tools/delegate-rollback"          ~/tools/delegate-rollback
-ln -sf "$(pwd)/tools/delegate-reject"            ~/tools/delegate-reject
-ln -sf "$(pwd)/tools/delegate-contracts"         ~/tools/delegate-contracts
-ln -sf "$(pwd)/tools/delegate-distill"           ~/tools/delegate-distill
-ln -sf "$(pwd)/tools/delegate-failures"          ~/tools/delegate-failures
-ln -sf "$(pwd)/tools/delegate-learnings"         ~/tools/delegate-learnings
-ln -sf "$(pwd)/tools/delegate-router"            ~/tools/delegate-router
-ln -sf "$(pwd)/tools/delegate-parallel"          ~/tools/delegate-parallel
-ln -sf "$(pwd)/tools/delegate-ast-check"         ~/tools/delegate-ast-check
-ln -sf "$(pwd)/tools/delegate-check-duplicates"  ~/tools/delegate-check-duplicates
-ln -sf "$(pwd)/tools/delegate-batch"             ~/tools/delegate-batch
-ln -sf "$(pwd)/tools/delegate-chain"             ~/tools/delegate-chain
-ln -sf "$(pwd)/tools/delegate-replay"            ~/tools/delegate-replay
-ln -sf "$(pwd)/tools/delegate-dashboard"         ~/tools/delegate-dashboard
-
-# 4. Install skills for Claude Code
-mkdir -p ~/.claude/skills/vibe ~/.claude/skills/vibeon ~/.claude/skills/vibeoff \
-         ~/.claude/skills/vibestatus ~/.claude/skills/vibe-model-pick \
-         ~/.claude/skills/vibe-model-clear ~/.claude/skills/vibe-report
-ln -sf "$(pwd)/SKILL.md"            ~/.claude/skills/vibe/SKILL.md
-ln -sf "$(pwd)/VIBEON.md"           ~/.claude/skills/vibeon/SKILL.md
-ln -sf "$(pwd)/VIBEOFF.md"          ~/.claude/skills/vibeoff/SKILL.md
-ln -sf "$(pwd)/VIBESTATUS.md"       ~/.claude/skills/vibestatus/SKILL.md
-ln -sf "$(pwd)/VIBE-MODEL-PICK.md"  ~/.claude/skills/vibe-model-pick/SKILL.md
-ln -sf "$(pwd)/VIBE-MODEL-CLEAR.md" ~/.claude/skills/vibe-model-clear/SKILL.md
-ln -sf "$(pwd)/VIBE-REPORT.md"      ~/.claude/skills/vibe-report/SKILL.md
-
-# 5. (Optional) Enable auto-mode — Claude delegates all code tasks automatically
-#    without requiring /vibe each time. Toggle with /vibeon and /vibeoff.
-grep -q "vibe auto-mode" ~/.claude/CLAUDE.md 2>/dev/null || cat >> ~/.claude/CLAUDE.md << 'EOF'
-
-# vibe auto-mode
-At the start of every user request that involves writing, editing, or fixing code:
-1. Run `test -f ~/.local/share/vibe-auto.flag` (silent, no output to user).
-2. If the flag exists → automatically invoke the `vibe` skill exactly as if the user had typed `/vibe <their full instruction>`. Do NOT ask first, do NOT explain — just delegate.
-3. If the flag is absent → proceed normally.
-
-The flag is toggled by `/vibeon` and `/vibeoff`.
-EOF
+# From your project root:
+git clone https://github.com/pcx-wave/vibe-skill.git .claude/vibe-skill
+chmod +x .claude/vibe-skill/tools/delegate* .claude/vibe-skill/tools/adapters/*
 ```
 
-Verify with `~/tools/delegate vibe /tmp "Say hello in one sentence." 3`
+### For Codex (optional, in addition to above)
+
+```bash
+mkdir -p .codex
+cp .claude/vibe-skill/CODEX-SKILL.md .codex/AGENTS.md
+```
+
+### What this gives you
+
+```
+your-project/
+  .claude/
+    vibe-skill/           ← this repo, cloned here
+      SKILL.md            ← Claude Code picks this up as a skill
+      CODEX-SKILL.md      ← copy to .codex/AGENTS.md for Codex
+      tools/
+        delegate           ← main entry point
+        adapters/          ← vibe, pi, opencode
+        delegate-*         ← all 20 tools
+      .delegate/
+        chains/            ← pre-built chain configs
+  .codex/
+    AGENTS.md             ← (optional) Codex orchestrator instructions
+```
+
+Claude Code auto-discovers skills under `.claude/` — no symlinks needed.
+
+### Generate a project brief (recommended)
+
+```bash
+python3 .claude/vibe-skill/tools/delegate-distill .
+```
+
+This creates `.delegate/project-brief.md` with your stack, key files, and conventions — auto-injected into every delegation prompt.
 
 ### Updating
 
-Because both installs use symlinks, a `git pull` is all you need:
-
 ```bash
-cd ~/vibe-skill && git pull
+cd .claude/vibe-skill && git pull
 ```
 
-All tools and skills update automatically — no re-copy needed.
+### Installing in multiple projects
 
-> **Migrating from a previous `cp`-based install?** Replace the copies with symlinks:
-> ```bash
-> cd ~/vibe-skill
-> ln -sf "$(pwd)/tools/delegate" ~/tools/delegate
-> ln -sf "$(pwd)/tools/vibe-delegate" ~/tools/vibe-delegate
-> ln -sf "$(pwd)/SKILL.md" ~/.claude/skills/vibe/SKILL.md
-> ```
+Just repeat the clone in each project root. Each project gets its own copy with its own chains, contracts, and project brief.
 
 ---
 
